@@ -1,0 +1,27 @@
+/*
+!/.gitignore
+!/system/
+runs/
+__pycache__/
+xray/vendor/
+
+# Generated training output and temporary files.
+/system/temp/
+/system/**/temp/
+/system/**/tmp/
+/system/**/logs/
+/system/**/log/
+/system/**/checkpoints/
+/system/**/results/
+*.py[cod]
+*.log
+*.out
+*.err
+*.tmp
+*.temp
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.pkl
+
