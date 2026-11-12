@@ -94,7 +94,6 @@ class clientfeddsa(Client):
             getattr(args, "utility_positive_only", False)
         )
         self.class_utility = None
-        self.class_utility_count = None
         self.latest_utility_metrics = {}
         self.capture_utility_gate = False
         self.last_local_utility_gate = None
@@ -384,13 +383,7 @@ class clientfeddsa(Client):
             mcl_target = self.stable_semantic_anchors[: self.num_classes].float().detach()
         adaptive.requires_grad_(True)
         z = F.linear(support_feat, proj_weight, proj_bias)
-        if getattr(model, "shared_classifier_mode", "linear") == "linear":
-            support_logits = F.linear(z, head_weight, head_bias)
-        else:
-            support_logits = float(model.shared_classifier_scale) * (
-                F.normalize(z, p=2, dim=1)
-                @ F.normalize(head_weight, p=2, dim=1).t()
-            )
+        support_logits = F.linear(z, head_weight, head_bias)
         support_task = F.cross_entropy(support_logits, sy)
         semantic_target = self.semantic_anchors[: self.num_classes].float().detach()
         mse_target = semantic_target if self.new_anchor_mode == "meta_separated" else adaptive
@@ -402,13 +395,7 @@ class clientfeddsa(Client):
         up_w, up_b, up_head_w = updated[:3]
         up_head_b = updated[3] if len(updated) > 3 else None
         query_z = F.linear(query_feat, up_w, up_b)
-        if getattr(model, "shared_classifier_mode", "linear") == "linear":
-            query_logits = F.linear(query_z, up_head_w, up_head_b)
-        else:
-            query_logits = float(model.shared_classifier_scale) * (
-                F.normalize(query_z, p=2, dim=1)
-                @ F.normalize(up_head_w, p=2, dim=1).t()
-            )
+        query_logits = F.linear(query_z, up_head_w, up_head_b)
         query_loss = F.cross_entropy(query_logits, qy)
         anchor_grad = torch.autograd.grad(query_loss, adaptive, allow_unused=False)[0]
         self.meta_anchor_grad = anchor_grad.detach().cpu()

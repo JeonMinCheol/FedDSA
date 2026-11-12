@@ -6,7 +6,6 @@ import copy
 import time
 import random
 import shutil
-import glob
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils.data_utils import read_client_data
@@ -421,7 +420,6 @@ class Server(object):
         print(f"Saved TSNE figure: {figure_path}")
         print(f"Saved TSNE features: {feature_path}")
 
-        self.try_save_tsne_comparison(feature_path, meta, save_dir)
         return figure_path
 
     def collect_tsne_features(self, split="test"):
@@ -627,115 +625,8 @@ class Server(object):
         fig.savefig(figure_path, dpi=220, bbox_inches="tight")
         plt.close(fig)
 
-    def try_save_tsne_comparison(self, current_path, current_meta, save_dir):
-        if self.algorithm not in {"FedSA", "FedSTAR"}:
-            return
 
-        other_path, other_meta = self.find_tsne_counterpart(current_path, current_meta, save_dir)
-        if other_path is None:
-            print("TSNE comparison skipped: counterpart FedSA/FedSTAR features not found yet.")
-            return
 
-        current = np.load(current_path, allow_pickle=True)
-        other = np.load(other_path, allow_pickle=True)
-        current_features = current["features"].astype(np.float32)
-        other_features = other["features"].astype(np.float32)
-        current_labels = current["labels"].astype(np.int64)
-        other_labels = other["labels"].astype(np.int64)
-        current_clients = current["clients"].astype(np.int64)
-        other_clients = other["clients"].astype(np.int64)
-        current_anchor_features = (
-            current["anchor_features"].astype(np.float32)
-            if "anchor_features" in current.files
-            else np.empty((0, current_features.shape[1]), dtype=np.float32)
-        )
-        other_anchor_features = (
-            other["anchor_features"].astype(np.float32)
-            if "anchor_features" in other.files
-            else np.empty((0, other_features.shape[1]), dtype=np.float32)
-        )
-        current_anchor_labels = (
-            current["anchor_labels"].astype(np.int64)
-            if "anchor_labels" in current.files
-            else np.empty((0,), dtype=np.int64)
-        )
-        other_anchor_labels = (
-            other["anchor_labels"].astype(np.int64)
-            if "anchor_labels" in other.files
-            else np.empty((0,), dtype=np.int64)
-        )
-
-        current_embedding, current_anchor_embedding = self.compute_tsne_embedding_with_anchors(
-            current_features,
-            current_anchor_features,
-        )
-        other_embedding, other_anchor_embedding = self.compute_tsne_embedding_with_anchors(
-            other_features,
-            other_anchor_features,
-        )
-        safe_current = self._safe_filename(current_meta.get("run_name", self.algorithm))
-        safe_other = self._safe_filename(other_meta.get("run_name", other_meta.get("algorithm", "other")))
-        compare_path = os.path.join(save_dir, f"compare-{safe_current}-vs-{safe_other}-{current_meta['split']}.png")
-        panels = [
-            (
-                current_embedding,
-                current_labels,
-                current_clients,
-                self._tsne_title(current_meta),
-                current_anchor_embedding,
-                current_anchor_labels,
-            ),
-            (
-                other_embedding,
-                other_labels,
-                other_clients,
-                self._tsne_title(other_meta),
-                other_anchor_embedding,
-                other_anchor_labels,
-            ),
-        ]
-        self.plot_tsne_panels(
-            panels,
-            compare_path,
-            title=None,
-        )
-        print(f"Saved TSNE comparison: {compare_path}")
-
-    def find_tsne_counterpart(self, current_path, current_meta, save_dir):
-        current_algorithm = current_meta.get("algorithm", "")
-        target_algorithm = "FedSA" if current_algorithm == "FedSTAR" else "FedSTAR"
-        match_keys = [
-            "dataset",
-            "model_family",
-            "feature_dim",
-            "split",
-            "random_seed",
-            "times",
-            "normalize",
-        ]
-        candidates = []
-        for path in glob.glob(os.path.join(save_dir, "*-features.npz")):
-            if os.path.abspath(path) == os.path.abspath(current_path):
-                continue
-            meta = self._load_tsne_meta(path)
-            if not meta or meta.get("algorithm") != target_algorithm:
-                continue
-            if all(meta.get(key) == current_meta.get(key) for key in match_keys):
-                candidates.append((os.path.getmtime(path), path, meta))
-        if not candidates:
-            return None, None
-        candidates.sort(reverse=True)
-        return candidates[0][1], candidates[0][2]
-
-    def _load_tsne_meta(self, path):
-        try:
-            data = np.load(path, allow_pickle=True)
-            raw = data["metadata"]
-            if hasattr(raw, "item"):
-                raw = raw.item()
-            return json.loads(str(raw))
-        except Exception:
-            return None
 
     def _tsne_metadata(self, split, num_samples, num_anchors=0):
         return {
@@ -759,15 +650,6 @@ class Server(object):
         }
 
     def _tsne_algorithm_label(self):
-        if self.algorithm == "FedSTAR":
-            mode = str(getattr(self.args, "star_anchor_mode", "point"))
-            if mode in {"qk", "qwk_diag", "qwk_lowrank", "qwk_full"}:
-                tau = float(getattr(self.args, "star_qk_temperature", 0.2))
-                if mode == "qwk_lowrank":
-                    rank = int(getattr(self.args, "star_qwk_rank", 16))
-                    return f"FedSTAR-{mode} tau={tau:g} r={rank}"
-                return f"FedSTAR-{mode} tau={tau:g}"
-            return f"FedSTAR-{mode}"
         if self.algorithm == "FedSA":
             lam = float(getattr(self.args, "lamda", 0.0))
             mcl = float(getattr(self.args, "margin_contrastive", 0.0))

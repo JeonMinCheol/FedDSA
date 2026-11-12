@@ -21,8 +21,6 @@ def configure_utility_module(args):
     trust = getattr(args, "fast_anchor_proto_trust", "auto")
     if trust not in {"off", "auto"}:
         raise ValueError("Use the adopted RAAR (auto) or disable it (off)")
-    if not getattr(args, "experimental_linear_cosine_agreement", True):
-        raise ValueError("Current FedDSA uses the linear classifier and actual classifier logits for PCW")
     if getattr(args, "reliability_weighted_aggregation", False):
         raise ValueError("Current FedDSA uses uniform client prototype aggregation")
     args.anchor_candidate_mix = args.moving_anchor_ema = gamma

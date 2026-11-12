@@ -7,7 +7,6 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from mmcv.cnn import build_norm_layer
 
 from flcore.clients.clientbase import load_item, save_item
@@ -30,7 +29,6 @@ class FedDSA(Server):
         configure_utility_module(args)
         super().__init__(args, times)
         self.raar_enabled = args.raar_enabled
-        self.candidate_next_gap = args.candidate_next_gap
         self.anchor_momentum = args.anchor_momentum
         self.candidate_trust_max_weight = args.candidate_trust_max_weight
         self.utility_trust_penalty = args.utility_trust_penalty
@@ -79,7 +77,6 @@ class FedDSA(Server):
         self.fast_anchor_ema = min(
             max(float(getattr(args, "fast_anchor_ema", 1.0)), 0.0), 1.0
         )
-        self.moving_anchor_ema = args.moving_anchor_ema
         self.anchor_candidate_mix = args.anchor_candidate_mix
         self.dual_disagreement_gate = bool(
             getattr(args, "dual_disagreement_gate", False)
@@ -227,9 +224,6 @@ class FedDSA(Server):
         self.relation_confidence = None
         self.relation_observed = None
         self.validation_anchor_grads = None
-        self.validation_anchor_support = 0.0
-        self.validation_anchor_gains = None
-        self.validation_gain_support = None
         self.utility_validation_probe = bool(
             getattr(args, "utility_validation_probe", False)
         )
@@ -774,12 +768,7 @@ class FedDSA(Server):
             "round": int(round_idx),
             "goal": str(getattr(self.args, "goal", "")),
             "seed": int(self.random_seed),
-            "classifier_scale": float(
-                getattr(self.args, "shared_classifier_scale", 0.0)
-            ),
-            "experimental_linear_cosine_agreement": bool(
-                True
-            ),
+            "classifier": "linear",
             "mcl_variant": str(getattr(self.args, "mcl_variant", "fedsa")),
             "mcl_hard_margin": float(getattr(self.args, "mcl_hard_margin", 0.5)),
             "new_anchor_mode": str(self.new_anchor_mode),
@@ -1239,10 +1228,8 @@ class FedDSA(Server):
                 (grad * weight for grad, weight in zip(validation_grads, weights)),
                 torch.zeros_like(validation_grads[0]),
             )
-            self.validation_anchor_support = float(len(validation_grads))
         else:
             self.validation_anchor_grads = None
-            self.validation_anchor_support = 0.0
         if validation_gains:
             gain_sum = torch.zeros(self.num_classes, dtype=torch.float32)
             count_sum = torch.zeros(self.num_classes, dtype=torch.float32)
@@ -1251,11 +1238,6 @@ class FedDSA(Server):
                 count_sum += count
             self.require_finite_upload(gain_sum, "weighted_validation_sum")
             self.require_finite_upload(count_sum, "validation_count_sum")
-            self.validation_anchor_gains = gain_sum / count_sum.clamp_min(1.0)
-            self.validation_gain_support = count_sum
-        else:
-            self.validation_anchor_gains = None
-            self.validation_gain_support = None
         self.utility_validation_metrics = {
             "pearson": 0.0,
             "spearman": 0.0,
@@ -1666,12 +1648,10 @@ class FedDSA(Server):
         with torch.enable_grad():
             discriminative = old.detach().clone().requires_grad_(True)
             if self.discriminative_metric == "cosine":
-                # Match the fixed cosine classifier scale used by the local
-                # heads.  This avoids raw Euclidean-distance CE saturating
-                # when the observed prototypes are already correctly ranked.
+                # Optional anchor-space objective; the local classifier is linear.
                 proto_norm = torch.nn.functional.normalize(protos.float(), p=2, dim=1)
                 anchor_norm = torch.nn.functional.normalize(discriminative, p=2, dim=1)
-                scale = float(getattr(self.args, "shared_classifier_scale", 5.0))
+                scale = float(getattr(self.args, "discriminative_cosine_scale", 5.0))
                 logits = scale * (proto_norm @ anchor_norm.t())
                 task_loss = torch.nn.functional.cross_entropy(logits, labels)
             else:
@@ -1912,7 +1892,6 @@ class FedDSA(Server):
         candidate = self.semantic_anchors.detach().float()
         if not self.raar_enabled:
             self.last_prototype_trust_raw = torch.ones(candidate.size(0), device=candidate.device)
-            self.last_prototype_trust_coefficient = self.last_prototype_trust_raw.clone()
             return
         if anchor_before is None:
             raise ValueError("RAAR requires the pre-update anchor bank")
@@ -1997,7 +1976,6 @@ class FedDSA(Server):
         beta = decision["beta"]
         updated, components = apply_raar_beta(current, candidate, stable, beta, self.anchor_candidate_mix)
         self.last_prototype_trust_raw = prior.clone()
-        self.last_prototype_trust_coefficient = beta.clone()
         self.candidate_gain_stats.update(
             proposal_only=False, original_geometry_beta=prior.cpu().tolist(),
             proposed_beta=proposed.cpu().tolist(), applied_beta=beta.cpu().tolist(),
@@ -2028,8 +2006,6 @@ class FedDSA(Server):
         device = delta.device
         beta = torch.ones(num_classes, device=device, dtype=torch.float32)
         if not self.raar_enabled:
-            self.last_base_prototype_trust = beta.clone()
-            self.last_trust_utility_multiplier = beta.clone()
             return beta
 
         signal = delta.float().pow(2).sum(dim=1).clamp_min(0.0)
@@ -2058,17 +2034,6 @@ class FedDSA(Server):
             uncertainty = noise + self.utility_trust_penalty * signal * harm
             confidence = signal / (signal + uncertainty + 1e-12) * support_trust
             beta[has_stats] = confidence.clamp(0, 1)[has_stats]
-            # Diagnostic decomposition only; there is no independently configurable trust branch.
-            base = torch.ones_like(beta)
-            base[has_stats] = (signal / (signal + noise + 1e-12) * support_trust)[has_stats]
-            multiplier = torch.ones_like(beta)
-            positive = has_stats & (base > 0)
-            multiplier[positive] = beta[positive] / base[positive]
-            self.last_base_prototype_trust = base
-            self.last_trust_utility_multiplier = multiplier
-        else:
-            self.last_base_prototype_trust = beta.clone()
-            self.last_trust_utility_multiplier = beta.clone()
         return beta
 
 
@@ -2100,7 +2065,6 @@ class FedDSA(Server):
         raw = self.raw_class_utility
         count = self.raw_class_utility_count
         applied = raw.detach().clone()
-        sources = torch.arange(raw.numel(), device=raw.device)
         valid = torch.nonzero(count > 0, as_tuple=False).view(-1)
         mode = getattr(self, "utility_signal_mode", "observed")
         if mode == "shuffled" and valid.numel() > 1:
@@ -2109,19 +2073,14 @@ class FedDSA(Server):
             permutation = torch.randperm(valid.numel(), generator=generator).to(raw.device)
             source = valid.index_select(0, permutation)
             applied[valid] = raw.index_select(0, source)
-            sources[valid] = source
         elif mode == "uniform" and valid.numel():
             # Preserve the mean of the eligible class scores, while removing
             # their class-specific variation. Missing-evidence masking remains unchanged.
             applied.fill_(raw.index_select(0, valid).mean())
-            sources.fill_(-1)
         elif mode == "geometry":
             # Explicit component ablation: utility is measured for diagnostics
             # but contributes zero uncertainty to the otherwise unchanged rule.
             applied.zero_()
-            sources.fill_(-2)
-        self.last_applied_raw_utility = applied
-        self.last_utility_source_class = sources
         return applied
 
 

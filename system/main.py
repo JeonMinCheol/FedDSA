@@ -461,11 +461,7 @@ if __name__ == "__main__":
     parser.add_argument('--gnn_weight_decay', type=float, default=0.0001)
     parser.add_argument('--gnn_learning_rate', type=float, default=0.001)
     # FedDSA
-    parser.add_argument('--shared_classifier_scale', type=float, default=5.0)
     parser.add_argument('--use_amp', type=str2bool, nargs='?', const=True, default=False)
-    experimental.add_argument('--experimental_linear_cosine_agreement', type=str2bool,
-                        nargs='?', const=True, default=True,
-                        help="Compatibility option; FedDSA uses a linear classifier; PCW uses actual classifier logits")
     experimental.add_argument('--anchor_codebook', type=str, default='gaussian',
                         choices=['gaussian', 'simplex'],
                         help="[EXPERIMENTAL] Initial anchor geometry; simplex is a fixed-codebook diagnostic")
@@ -474,7 +470,7 @@ if __name__ == "__main__":
     parser.add_argument('--fast_anchor_proto_trust', choices=['off', 'auto'], default='auto',
                         help='Use adopted NextGap RAAR or disable server trust')
     parser.add_argument('--fast_anchor_radius_rho', type=float, default=0.6,
-                        help="Prototype trust disagreement scale; also used by FedSTAR")
+                        help="Prototype trust disagreement scale")
     experimental.add_argument('--fixed_anchor', type=str2bool, nargs='?', const=True, default=False,
                         help="[EXPERIMENTAL] FedDSA control: keep the initialized random anchor fixed and skip all server updates")
     experimental.add_argument('--semantic_gate_mode', type=str, default='off',
@@ -497,6 +493,9 @@ if __name__ == "__main__":
                         help="[EXPERIMENTAL] Maximum relation-anchor movement as a nearest-neighbor fraction")
     experimental.add_argument('--discriminative_anchor_lr', type=float, default=0.05,
                         help="[EXPERIMENTAL] Discriminative-anchor prototype CE step")
+    experimental.add_argument('--discriminative_cosine_scale', '--shared_classifier_scale',
+                        dest='discriminative_cosine_scale', type=float, default=5.0,
+                        help="[EXPERIMENTAL] Semantic-discriminative anchor cosine objective scale; never applied to the linear classifier")
     experimental.add_argument('--discriminative_anchor_reg', type=float, default=0.01,
                         help="[EXPERIMENTAL] Discriminative-anchor stability regularizer")
     experimental.add_argument('--discriminative_step_scale', type=float, default=0.25,

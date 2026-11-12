@@ -20,15 +20,13 @@ def build_model_from_spec(spec, args, namespace=None):
     if not isinstance(model, nn.Module):
         raise TypeError(f'Model spec did not evaluate to nn.Module: {spec}')
     model = adapt_image_channels(model, args)
-    if getattr(args, "algorithm", None) in {"FedDSA", "FedSTAR"}:
+    if getattr(args, "algorithm", None) == "FedDSA":
         base, feature_dim = _replace_classifier_with_identity(model)
         return PrototypeModel(
             base=base, feature_dim=feature_dim,
             target_dim=getattr(args, "feature_dim", feature_dim),
             num_classes=args.num_classes,
-            shared_classifier_scale=getattr(args, "shared_classifier_scale", 5.0),
             backbone_name=str(spec),
-            experimental_linear_cosine_agreement=args.algorithm == "FedDSA",
         )
     return model
 
@@ -40,22 +38,18 @@ class PrototypeModel(nn.Module):
         feature_dim: int,
         num_classes: int,
         target_dim: int = None,
-        shared_classifier_scale: float = 5.0,
         backbone_name: str = "unknown",
-        experimental_linear_cosine_agreement: bool = False,
     ):
         super().__init__()
         self.base = base
         self.feature_dim = int(feature_dim)
         self.shared_dim = int(target_dim) if target_dim is not None else self.feature_dim
-        self.shared_classifier_scale = float(shared_classifier_scale)
-        self.experimental_linear_cosine_agreement = bool(experimental_linear_cosine_agreement)
-        self.shared_classifier_mode = "linear" if self.experimental_linear_cosine_agreement else "cosine"
+        self.shared_classifier_mode = "linear"
         self.backbone_name = str(backbone_name)
         self.projector_mode = "linear"
         self.shared_projector = nn.Linear(self.feature_dim, self.shared_dim)
         self.shared_head = nn.Linear(
-            self.shared_dim, int(num_classes), bias=self.experimental_linear_cosine_agreement
+            self.shared_dim, int(num_classes), bias=True
         )
 
     def extract_backbone(self, x: torch.Tensor) -> torch.Tensor:
@@ -71,18 +65,7 @@ class PrototypeModel(nn.Module):
         return self.shared_projector(feat)
 
     def classify(self, z_s: torch.Tensor) -> torch.Tensor:
-        if self.shared_classifier_mode == "linear":
-            return self.shared_head(z_s)
-        if self.shared_classifier_mode != "cosine":
-            raise ValueError("Unsupported classifier mode in checkpoint.")
-        return self.shared_classifier_scale * self.agreement_logits(z_s)
-
-    def agreement_logits(self, z_s: torch.Tensor) -> torch.Tensor:
-        """Use the classifier's directions for agreement without adding another head."""
-        features = F.normalize(z_s, p=2, dim=1)
-        weights = F.normalize(self.shared_head.weight, p=2, dim=1)
-        weights = weights.to(device=features.device, dtype=features.dtype)
-        return features @ weights.t()
+        return self.shared_head(z_s)
 
     def forward(self, x: torch.Tensor, return_features: bool = False):
         feat = self.extract_backbone(x)

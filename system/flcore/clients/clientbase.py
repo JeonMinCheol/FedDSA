@@ -60,8 +60,8 @@ class Client(object):
 
         model_file = _item_file(self.role, 'model', self.save_folder_name)
         has_initial_model = model_file in _ITEM_STORE or (not _is_temp_path(self.save_folder_name) and os.path.exists(model_file))
-        semantic_model_algorithms = {"FedSTAR", "FedDSA"}
-        memory_model_algorithms = {"FedSTAR", "FedDSA", "FedProto"}
+        semantic_model_algorithms = {"FedDSA"}
+        memory_model_algorithms = {"FedDSA", "FedProto"}
         init_device = "cpu" if args.algorithm in semantic_model_algorithms else self.device
         if _is_temp_path(self.save_folder_name) or args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name or not has_initial_model:
             if args.models_folder_name:
