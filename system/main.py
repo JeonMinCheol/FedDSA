@@ -465,12 +465,14 @@ if __name__ == "__main__":
     parser.add_argument('--use_amp', type=str2bool, nargs='?', const=True, default=False)
     experimental.add_argument('--experimental_linear_cosine_agreement', type=str2bool,
                         nargs='?', const=True, default=True,
-                        help="Compatibility option; FedDSA uses a linear classifier and cosine agreement")
+                        help="Compatibility option; FedDSA uses a linear classifier; PCW uses actual classifier logits")
     experimental.add_argument('--anchor_codebook', type=str, default='gaussian',
                         choices=['gaussian', 'simplex'],
                         help="[EXPERIMENTAL] Initial anchor geometry; simplex is a fixed-codebook diagnostic")
     experimental.add_argument('--separate_anchor_roles', type=str2bool, nargs='?', const=True, default=True,
                         help="[EXPERIMENTAL] FedDSA: use semantic anchor for MSE and adaptive anchor for MCL in role-separated modes")
+    parser.add_argument('--fast_anchor_proto_trust', choices=['off', 'auto'], default='auto',
+                        help='Use adopted NextGap RAAR or disable server trust')
     parser.add_argument('--fast_anchor_radius_rho', type=float, default=0.6,
                         help="Prototype trust disagreement scale; also used by FedSTAR")
     experimental.add_argument('--fixed_anchor', type=str2bool, nargs='?', const=True, default=False,
@@ -579,8 +581,14 @@ if __name__ == "__main__":
     parser.add_argument('--anchor_momentum', '--stable_ema', '--ema',
                         dest='anchor_momentum', type=float, default=0.9999,
                         help="FedDSA: stable anchor EMA momentum")
-    experimental.add_argument('--moving_anchor_ema', type=float, default=1.0,
-                        help="[EXPERIMENTAL] Single moving-anchor update fraction; 1.0 preserves direct prototype replacement")
+    parser.add_argument('--anchor_candidate_mix', type=float, default=None,
+                        help='New prototype fraction gamma; defaults to 0.5')
+    experimental.add_argument('--moving_anchor_ema', type=float, default=None,
+                        help='Compatibility alias for anchor_candidate_mix, the new prototype fraction')
+    parser.add_argument('--disable_prototype_trust', type=str2bool, nargs='?', const=True, default=False,
+                        help='Disable RAAR while keeping the same EMA candidate')
+    experimental.add_argument('--raar_diagnostics', type=str2bool, nargs='?', const=True, default=False,
+                        help='Optional B4 train query; never used to select RAAR updates')
     experimental.add_argument('--fast_anchor_ema', type=float, default=1.0,
                         help="[EXPERIMENTAL] FedDSA dual gate: EMA step for the adaptive legacy anchor")
     experimental.add_argument('--dual_disagreement_gate', type=str2bool, nargs='?', const=True, default=False,
@@ -616,6 +624,9 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
+    if args.algorithm == "FedDSA":
+        from utils.feddsa_utils import configure_utility_module
+        configure_utility_module(args)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
 
     torch.manual_seed(args.random_seed)

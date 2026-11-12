@@ -1,20 +1,31 @@
 import time
+import hashlib
 from collections import defaultdict
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from sklearn import metrics
 from sklearn.preprocessing import label_binarize
 
 from flcore.clients.clientbase import Client, load_item, save_item
+from utils.feddsa_utils import configure_utility_module
+from utils.distance_numerics import guarded_cdist, nearest_gap
+from utils.mcl_gap import add_mcl_gap, sample_gap_metrics
 
 
 class clientfeddsa(Client):
     def __init__(self, args, id, train_samples, test_samples, **kwargs):
         if float(args.lamda) != 1.0 or float(args.margin_contrastive) != 1.0:
             raise ValueError("FedDSA uses unit MSE and MCL coefficients; -lam and -mcl must both be 1.0")
+        configure_utility_module(args)
         super().__init__(args, id, train_samples, test_samples, **kwargs)
+        self.candidate_gain_enabled = args.candidate_gain_enabled
+        self.candidate_next_gap = args.candidate_next_gap
+        self.mcl_gap_class_cap = args.mcl_gap_class_cap
+        self.raar_diagnostics = bool(getattr(args, "raar_diagnostics", False))
+        self.anchor_candidate_evidence = None
         torch.manual_seed(self.random_seed)
         self.device = torch.device(args.device)
         self.keep_client_models_on_gpu = bool(
@@ -28,6 +39,7 @@ class clientfeddsa(Client):
         self.stable_semantic_anchors = None
         self.latest_train_metrics = {}
         self.current_round = 0
+        self.lamda = self.mcl = 1.0
         self.mcl_variant = str(getattr(args, "mcl_variant", "fedsa")).lower()
         if self.mcl_variant not in {"fedsa", "hard_negative"}:
             self.mcl_variant = "fedsa"
@@ -114,6 +126,23 @@ class clientfeddsa(Client):
 
     def set_round(self, round_idx):
         self.current_round = int(round_idx)
+
+    def load_train_data(self, batch_size=None, drop_last=True, *, phase="train"):
+        train_data = self._read_client_data_cached(is_train=True)
+        self.current_train_samples = len(train_data)
+        # Each phase replays independently; optional CAU never advances training sampling.
+        key = f"{self.random_seed}:{self.id}:{self.current_round}:{phase}".encode()
+        seed = int.from_bytes(hashlib.sha256(key).digest()[:8], "big")
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+        return DataLoader(
+            train_data,
+            self.batch_size if batch_size is None else batch_size,
+            drop_last=drop_last,
+            shuffle=bool(train_data),
+            pin_memory=str(self.device).startswith("cuda"),
+            generator=generator,
+        )
+
 
     def move_input(self, x, y):
         if isinstance(x, (list, tuple)):
@@ -214,137 +243,38 @@ class clientfeddsa(Client):
         return self.semantic_anchors
 
     def compute_anchor_utility(self, model):
-        """Measure one-step query improvement caused by anchor supervision.
-
-        With ``utility_validation_probe`` enabled, the same branches are
-        evaluated on a third, disjoint batch for an independent gain target.
-        """
-
-        self.anchor_utility = None
-        self.anchor_utility_count = None
-        self.validation_anchor_gain = None
-        self.validation_anchor_gain_count = None
+        """Keep CAU's two batches; cache a third for RAAR's separate decision."""
+        from utils.head_counterfactual_utility import head_gains
+        self.anchor_utility = self.anchor_utility_count = None
+        self.validation_anchor_gain = self.validation_anchor_gain_count = None
+        self.anchor_candidate_evidence = None
         self.latest_utility_metrics = {}
-        if not self.prototype_utility or self.semantic_anchors is None:
+        candidate = bool(getattr(self, "candidate_gain_enabled", False))
+        if not candidate and getattr(self, "current_round", 0) % getattr(self, "utility_interval_rounds", 1):
             return None
-
+        if (not self.prototype_utility and not candidate) or self.semantic_anchors is None:
+            return None
+        third_batch = self.utility_validation_probe or candidate
+        needed = 3 if third_batch else 2
+        diagnostic = candidate and getattr(self, "raar_diagnostics", False)
         batches = []
-        for x, y in self.load_train_data(drop_last=False):
-            if isinstance(x, (list, tuple)):
-                x = x[0]
-            batches.append((x, y.long().view(-1)))
-            if len(batches) >= (3 if self.utility_validation_probe else 2):
+        for x, y in self.load_train_data(drop_last=False, phase="utility"):
+            batches.append(self.move_input(x, y))
+            if len(batches) == (4 if diagnostic else needed):
                 break
-        projector = getattr(model, "shared_projector", None)
-        head = getattr(model, "shared_head", None)
-        if len(batches) < (3 if self.utility_validation_probe else 2) or not isinstance(projector, torch.nn.Linear) or head is None:
+        if len(batches) < needed:
             return None
-
-        sx, sy = self.move_input(*batches[0])
-        qx, qy = self.move_input(*batches[1])
-        vx, vy = (self.move_input(*batches[2]) if self.utility_validation_probe else (None, None))
-        was_training = model.training
-        model.eval()
-        with torch.no_grad():
-            support_feat = model.extract_backbone(sx).detach().float()
-            query_feat = model.extract_backbone(qx).detach().float()
-            validation_feat = (
-                model.extract_backbone(vx).detach().float()
-                if self.utility_validation_probe
-                else None
-            )
-
-        params = [projector.weight, projector.bias, head.weight]
-        if head.bias is not None:
-            params.append(head.bias)
-        anchors = self.semantic_anchors[: self.num_classes].float().detach()
-        z = F.linear(support_feat, params[0], params[1])
-        if getattr(model, "shared_classifier_mode", "linear") == "linear":
-            logits = F.linear(z, params[2], params[3] if len(params) > 3 else None)
-        else:
-            logits = float(model.shared_classifier_scale) * (
-                F.normalize(z, p=2, dim=1)
-                @ F.normalize(params[2], p=2, dim=1).t()
-            )
-        task = F.cross_entropy(logits, sy)
-        mse = F.mse_loss(z.float(), anchors.index_select(0, sy))
-        mcl_dist = torch.cdist(z.float(), anchors, p=2)
-        # The virtual probe always shares the training MCL gap; agreement
-        # weighting stays out because this counterfactual loss is unweighted.
-        gap = self.mcl_gap_value()
-        if gap > 0:
-            mcl_dist = mcl_dist + F.one_hot(sy, self.num_classes).to(
-                device=mcl_dist.device, dtype=mcl_dist.dtype
-            ) * gap
-        mcl = F.cross_entropy(-mcl_dist, sy)
-        with_anchor = task + mse + mcl
-        without_anchor = task
-
-        def updated_params(loss, retain_graph=False):
-            grads = torch.autograd.grad(
-                loss,
-                params,
-                retain_graph=retain_graph,
-                allow_unused=False,
-            )
-            return [param - self.utility_inner_lr * grad for param, grad in zip(params, grads)]
-
-        with_params = updated_params(with_anchor, retain_graph=True)
-        without_params = updated_params(without_anchor)
-
-        def branch_logits(features, qparams):
-            qz = F.linear(features, qparams[0], qparams[1])
-            if getattr(model, "shared_classifier_mode", "linear") == "linear":
-                return F.linear(qz, qparams[2], qparams[3] if len(qparams) > 3 else None)
-            return float(model.shared_classifier_scale) * (
-                F.normalize(qz, p=2, dim=1)
-                @ F.normalize(qparams[2], p=2, dim=1).t()
-            )
-
-        with_loss = F.cross_entropy(
-            branch_logits(query_feat, with_params), qy, reduction="none"
-        )
-        without_loss = F.cross_entropy(
-            branch_logits(query_feat, without_params), qy, reduction="none"
-        )
-        gain = without_loss.detach() - with_loss.detach()
-        utility = torch.zeros(self.num_classes, device=self.device)
-        count = torch.zeros(self.num_classes, device=self.device)
-        utility.index_add_(0, qy, gain)
-        count.index_add_(0, qy, torch.ones_like(qy, dtype=count.dtype))
-        self.anchor_utility = (utility / count.clamp_min(1.0)).detach().cpu()
-        self.anchor_utility_count = count.detach().cpu()
+        result = head_gains(self, model, batches[0], batches[1],
+                            batches[2] if third_batch else None,
+                            batches[3] if diagnostic and len(batches) > 3 else None)
+        self.anchor_utility, self.anchor_utility_count = result[0]
         if self.utility_validation_probe:
-            validation_with_loss = F.cross_entropy(
-                branch_logits(validation_feat, with_params), vy, reduction="none"
-            )
-            validation_without_loss = F.cross_entropy(
-                branch_logits(validation_feat, without_params), vy, reduction="none"
-            )
-            validation_gain = validation_without_loss.detach() - validation_with_loss.detach()
-            validation_sum = torch.zeros(self.num_classes, device=self.device)
-            validation_count = torch.zeros(self.num_classes, device=self.device)
-            validation_sum.index_add_(0, vy, validation_gain)
-            validation_count.index_add_(
-                0, vy, torch.ones_like(vy, dtype=validation_count.dtype)
-            )
-            self.validation_anchor_gain = (
-                validation_sum / validation_count.clamp_min(1.0)
-            ).detach().cpu()
-            self.validation_anchor_gain_count = validation_count.detach().cpu()
-        valid = count > 0
+            self.validation_anchor_gain, self.validation_anchor_gain_count = result[1]
+        valid = self.anchor_utility_count > 0
         self.latest_utility_metrics = {
-            "utility_mean": float(self.anchor_utility[valid.cpu()].mean().item())
-            if bool(valid.any())
-            else 0.0,
-            "utility_positive_rate": float(
-                (self.anchor_utility[valid.cpu()] > 0).float().mean().item()
-            )
-            if bool(valid.any())
-            else 0.0,
+            "utility_mean": float(self.anchor_utility[valid].mean()) if valid.any() else 0.,
+            "utility_positive_rate": float((self.anchor_utility[valid] > 0).float().mean()) if valid.any() else 0.,
         }
-        if was_training:
-            model.train()
         return self.anchor_utility
 
     @torch.no_grad()
@@ -373,7 +303,7 @@ class clientfeddsa(Client):
         proto_count = None
 
         try:
-            for x, y in self.load_train_data(drop_last=False):
+            for x, y in self.load_train_data(drop_last=False, phase="prototype"):
                 x, y = self.move_input(x, y)
                 with torch.cuda.amp.autocast(enabled=self.amp_enabled):
                     rep, _ = self.forward_rep_logits(model, x)
@@ -414,7 +344,7 @@ class clientfeddsa(Client):
             return None
 
         batches = []
-        for x, y in self.load_train_data(drop_last=False):
+        for x, y in self.load_train_data(drop_last=False, phase="meta"):
             if isinstance(x, (list, tuple)):
                 x = x[0]
             batches.append((x, y.long().view(-1)))
@@ -509,7 +439,7 @@ class clientfeddsa(Client):
             return None
 
         batches = []
-        for x, y in self.load_train_data(drop_last=False):
+        for x, y in self.load_train_data(drop_last=False, phase="validation"):
             if isinstance(x, (list, tuple)):
                 x = x[0]
             batches.append((x, y.long().view(-1)))
@@ -596,13 +526,7 @@ class clientfeddsa(Client):
         if anchors is None or anchors.ndim != 2 or anchors.size(0) < 2:
             return 0.0
         anchors = torch.nan_to_num(anchors.float(), nan=0.0, posinf=0.0, neginf=0.0)
-        dist = torch.cdist(anchors, anchors, p=2)
-        dist.fill_diagonal_(float("inf"))
-        nearest = dist.min(dim=1).values
-        nearest = nearest[torch.isfinite(nearest)]
-        if nearest.numel() == 0:
-            return 0.0
-        return float(nearest.mean().item())
+        return nearest_gap(anchors,audit=getattr(self,"distance_numerics",None))
 
     def release_model_from_device(self, model=None):
         if model is None:
@@ -623,6 +547,8 @@ class clientfeddsa(Client):
             self.model = model
 
         model.to(self.device)
+        from utils.isolated_dropout import prepare_dropout
+        prepare_dropout(model, self.random_seed, self.id, self.current_round)
         model.train()
         optimizer = torch.optim.SGD(model.parameters(), lr=self.learning_rate)
         scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
@@ -635,8 +561,8 @@ class clientfeddsa(Client):
             local_epochs = int(self.rng.randint(1, max(2, local_epochs // 2 + 1)))
 
         try:
-            for _ in range(local_epochs):
-                for x, y in self.load_train_data(drop_last=True):
+            for epoch in range(local_epochs):
+                for x, y in self.load_train_data(drop_last=True, phase=f"train/{epoch}"):
                     x, y = self.move_input(x, y)
                     if self.train_slow:
                         time.sleep(0.1 * abs(self.rng.rand()))
@@ -644,11 +570,8 @@ class clientfeddsa(Client):
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
                         rep, logits = self.forward_rep_logits(model, x)
                         task_loss = self.loss(logits, y)
-                        agreement_logits = logits
-                        if self.agreement_weighting and getattr(model, "experimental_linear_cosine_agreement", False):
-                            with torch.no_grad():
-                                agreement_logits = model.agreement_logits(rep)
-                        anchor_loss, anchor_metrics = self.anchor_loss(rep, y, agreement_logits)
+                        # PCW judges the actual classifier prediction, including its bias.
+                        anchor_loss, anchor_metrics = self.anchor_loss(rep, y, logits.detach())
                         loss = task_loss + anchor_loss
 
                     if not torch.isfinite(loss):
@@ -667,6 +590,7 @@ class clientfeddsa(Client):
                         optimizer.step()
 
                     with torch.no_grad():
+                        metric_sums["training_classifier_acc"] += float(logits.detach().argmax(dim=1).eq(y).float().mean())
                         metric_sums["task_loss"] += float(task_loss.detach().float().item())
                         metric_sums["anchor_loss"] += float(anchor_loss.detach().float().item())
                         metric_sums["total_loss"] += float(loss.detach().float().item())
@@ -675,7 +599,7 @@ class clientfeddsa(Client):
                         metric_batches += 1
 
             self.collect_protos(model=model)
-            if self.prototype_utility:
+            if self.prototype_utility or getattr(self, "candidate_gain_enabled", False):
                 utility = self.compute_anchor_utility(model)
             if self.meta_enabled:
                 meta_grad = self.compute_meta_anchor_gradient(model)
@@ -888,6 +812,7 @@ class clientfeddsa(Client):
             metrics["utility_weight_mean"] = utility_weight.mean()
             metrics["utility_weight_std"] = utility_weight.std(unbiased=False)
         metrics.update(agree_metrics)
+        metrics["final_anchor_weight_mean"] = sample_weight.detach().float().mean()
 
         mse = self.anchor_mse(feats, y, mse_anchors, sample_weight)
         mcl, mcl_metrics = self.mcl_loss(
@@ -959,6 +884,9 @@ class clientfeddsa(Client):
                 weight = torch.ones_like(weight)
 
         metrics = {
+            "anchor_predictor_acc": anchor_correct.float().mean(),
+            "pcw_batch_R": reliability.detach(),
+            "pcw_weight_mean": weight.detach().float().mean(),
             "anchor_agree_head_acc": head_correct.float().mean(),
             "anchor_agree_both_wrong": both_wrong.float().mean(),
         }
@@ -1018,7 +946,12 @@ class clientfeddsa(Client):
         alternate_mask=None,
         alternate_weight=None,
     ):
-        dist = torch.cdist(feats.float(), anchors.float(), p=2)
+        if getattr(self, "mcl_gap_class_cap", False) and alternate_anchors is not None:
+            raise ValueError('Class-capped MCL gap requires one actual anchor bank;alternate-bank mixing is unsupported')
+        if getattr(self, "mcl_gap_class_cap", False) and self.mcl_variant != "fedsa":
+            raise ValueError('Class-capped MCL gap currently requires the FedSA distance-softmax objective')
+        distance_anchors = anchors.float()
+        dist = guarded_cdist(feats.float(), distance_anchors,audit=getattr(self,"distance_numerics",None),context="local_mcl")
         if alternate_anchors is not None and alternate_weight is not None:
             alternate_dist = torch.cdist(
                 feats.float(), alternate_anchors.float(), p=2
@@ -1032,8 +965,8 @@ class clientfeddsa(Client):
             dist = torch.where(alternate_mask.view(-1, 1), alternate_dist, dist)
         row = torch.arange(dist.size(0), device=dist.device)
         gap = self.mcl_gap_value()
-        if gap > 0:
-            dist = dist + F.one_hot(y, self.num_classes).to(device=dist.device, dtype=dist.dtype) * gap
+        dist = add_mcl_gap(dist, y, distance_anchors, gap,
+            class_cap=getattr(self, "mcl_gap_class_cap", False))
 
         same = dist[row, y]
         neg = dist.masked_fill(
@@ -1056,6 +989,8 @@ class clientfeddsa(Client):
             "mcl_tail_frac": (margin.detach() < 0).float().mean(),
             "mcl_sample_margin": margin.detach().float().mean(),
         }
+        if getattr(self, "mcl_gap_class_cap", False):
+            metrics.update(sample_gap_metrics(distance_anchors, gap, y, class_cap=True))
         return (per_sample * weights).mean(), metrics
 
     def mcl_gap_value(self):
@@ -1121,7 +1056,7 @@ class clientfeddsa(Client):
 
         try:
             with torch.no_grad():
-                for x, y in self.load_train_data(drop_last=False):
+                for x, y in self.load_train_data(drop_last=False, phase="metrics"):
                     x, y = self.move_input(x, y)
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
                         _, logits = self.forward_rep_logits(model, x)

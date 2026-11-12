@@ -13,7 +13,12 @@ from mmcv.cnn import build_norm_layer
 from flcore.clients.clientbase import load_item, save_item
 from flcore.clients.clientfeddsa import clientfeddsa
 from flcore.servers.serverbase import Server
-from utils.feddsa_utils import prototype_anchor_metrics
+from utils.feddsa_utils import prototype_anchor_metrics, configure_utility_module
+from utils.raar_marginal_refinement import marginal_raar_direction_scores, propose_marginal_raar_beta
+from utils.raar_prior_refinement import validate_raar_proposal, apply_raar_beta, compare_raar_movement
+from utils.raar_refinement_probe import CachedRAARQueries
+from utils.candidate_noise_statistics import cohort_candidate_confidence
+from utils.raar_next_gap import candidate_next_gap_kwargs
 
 
 class FedDSA(Server):
@@ -22,7 +27,14 @@ class FedDSA(Server):
     anchor_candidate_mix = 0.5
 
     def __init__(self, args, times):
+        configure_utility_module(args)
         super().__init__(args, times)
+        self.raar_enabled = args.raar_enabled
+        self.candidate_next_gap = args.candidate_next_gap
+        self.anchor_momentum = args.anchor_momentum
+        self.candidate_trust_max_weight = args.candidate_trust_max_weight
+        self.utility_trust_penalty = args.utility_trust_penalty
+        self.utility_trust_temperature = args.utility_trust_temperature
         self.set_slow_clients()
         self.set_clients(clientfeddsa)
         for client in self.clients:
@@ -67,9 +79,8 @@ class FedDSA(Server):
         self.fast_anchor_ema = min(
             max(float(getattr(args, "fast_anchor_ema", 1.0)), 0.0), 1.0
         )
-        self.moving_anchor_ema = min(
-            max(float(getattr(args, "moving_anchor_ema", 1.0)), 0.0), 1.0
-        )
+        self.moving_anchor_ema = args.moving_anchor_ema
+        self.anchor_candidate_mix = args.anchor_candidate_mix
         self.dual_disagreement_gate = bool(
             getattr(args, "dual_disagreement_gate", False)
         )
@@ -313,7 +324,7 @@ class FedDSA(Server):
         print(
             f"feat_dim={self.feat_dim} "
             "anchor_losses=raw(mse+mcl) "
-            f"classifier=linear agreement_head=shared_cosine"
+            f"classifier=linear agreement_head=classifier_logits"
         )
         print(
             f"anchors={self.anchor_mode} "
@@ -331,6 +342,8 @@ class FedDSA(Server):
         )
         if self.prototype_utility:
             print(f"utility_control=local_only anchor_candidate_mix={self.anchor_candidate_mix}")
+        print(f"raar=NextGap enabled={self.raar_enabled} prototype_aggregation=uniform "
+              f"gamma={self.anchor_candidate_mix} reference_momentum={self.anchor_momentum}")
         print("=" * 50)
 
     @torch.no_grad()
@@ -479,7 +492,7 @@ class FedDSA(Server):
                 else:
                     self.update_semantic_anchors()
                 if self.new_anchor_mode == "none":
-                    self.apply_prototype_trust()
+                    self.apply_prototype_trust(anchor_before)
                     self.update_stable_anchors()
                 if self.memory_update_enabled and self.new_anchor_mode == "none":
                     self.update_trusted_proto_memory()
@@ -493,7 +506,7 @@ class FedDSA(Server):
                     anchor_step_norms.mean().item()
                 )
             self.send_semantic_state()
-            if self.prototype_utility:
+            if self.prototype_utility or self.raar_enabled:
                 self.write_utility_gate_diagnostics(round_idx, gate_client, anchor_step_norms)
             if gate_client is not None:
                 gate_client.capture_utility_gate = False
@@ -719,6 +732,7 @@ class FedDSA(Server):
             },
             "anchor_step_norm": vector(anchor_step_norms),
         }
+        record["raar_nextgap"] = getattr(self, "candidate_gain_stats", None)
         with open(self.utility_gate_log_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, allow_nan=False) + "\n")
 
@@ -821,7 +835,16 @@ class FedDSA(Server):
                 **self.utility_validation_metrics,
             },
             "anchor_update_norm": float(self.last_anchor_update_norm),
+            "pcw_prediction_source": "classifier_logits",
+            "virtual_anchor_supervision": {"mcl_gap": True, "agreement_weighting": False},
             "prototype_trust": self.fast_anchor_proto_trust,
+            "raar_version": "nextgap_prior_marginal_uniform_aggregation",
+            "raar_enabled": self.raar_enabled,
+            "anchor_candidate_mix": self.anchor_candidate_mix,
+            "anchor_momentum": self.anchor_momentum,
+            "prototype_aggregation": "uniform_client_mean",
+            "mcl_gap_class_cap": True,
+            "raar_nextgap": getattr(self, "candidate_gain_stats", None),
             "role_step_clipping": bool(role_mode),
             "active_anchor_update": (
                 "semantic_observation_plus_discriminative"
@@ -1098,6 +1121,8 @@ class FedDSA(Server):
             )
 
     def receive_protos(self):
+        if hasattr(self, "raw_class_utility_count"):
+            self.raw_class_utility_count.zero_()
         self.last_utility_observed = None
         self.last_utility_signal = None
         self.last_utility_observation_count = None
@@ -1294,6 +1319,7 @@ class FedDSA(Server):
             self.require_finite_upload(utility_sum, "weighted_utility_sum")
             self.require_finite_upload(utility_count_sum, "utility_count_sum")
             observed = utility_sum / utility_count_sum.clamp_min(1.0)
+            self.update_raw_utility(observed, utility_count_sum)
             valid = utility_count_sum > 0
             self.last_utility_observed = observed.detach().clone()
             self.last_utility_observation_count = utility_count_sum.detach().clone()
@@ -1359,36 +1385,8 @@ class FedDSA(Server):
         for label, proto_list in groups.items():
             proto_tensor = torch.stack(proto_list, dim=0)
             center = proto_tensor.mean(dim=0)
-            if self.reliability_aggregation_geometry == "cosine":
-                directions = F.normalize(proto_tensor, p=2, dim=1)
-                reference = F.normalize(directions.mean(dim=0), p=2, dim=0)
-                distances = (1.0 - directions.matmul(reference)).clamp_min(0.0)
-            else:
-                distances = (proto_tensor - center.view(1, -1)).pow(2).sum(dim=1)
-            if self.reliability_weighted_aggregation and proto_tensor.size(0) > 1:
-                if self.reliability_aggregation_geometry == "cosine":
-                    # Angular distances are already dimensionless; use the
-                    # configured temperature directly (e.g. 0.2 => inverse
-                    # temperature 5) instead of scaling by a data-dependent median.
-                    scale = max(self.reliability_aggregation_temperature, 1e-6)
-                else:
-                    positive = distances[distances > 0]
-                    scale = (
-                        float(positive.median().item())
-                        if positive.numel()
-                        else 1.0
-                    )
-                    scale = max(
-                        scale * self.reliability_aggregation_temperature, 1e-6
-                    )
-                weights = torch.exp(-distances / scale)
-                global_proto = (
-                    proto_tensor * weights.view(-1, 1)
-                ).sum(dim=0) / weights.sum().clamp_min(1e-12)
-                self.proto_reliability[int(label)] = float(weights.mean().item())
-            else:
-                global_proto = center
-                self.proto_reliability[int(label)] = 1.0
+            global_proto = center
+            self.proto_reliability[int(label)] = 1.0
             global_protos[int(label)] = global_proto
             disagreement = (proto_tensor - global_proto.view(1, -1)).pow(2).sum(dim=1)
             self.proto_disagreement[int(label)] = float(disagreement.mean().item())
@@ -1410,20 +1408,9 @@ class FedDSA(Server):
                         proto.to(self.semantic_anchors.dtype),
                         float(self.fast_anchor_ema),
                     )
-                elif self.prototype_utility:
-                    self.semantic_anchors[label].lerp_(
-                        proto.to(self.semantic_anchors.dtype),
-                        self.anchor_candidate_mix,
-                    )
                 else:
-                    alpha = (
-                        self.moving_anchor_ema
-                        if self.anchor_mode == "single"
-                        and self.new_anchor_mode == "none"
-                        else 1.0
-                    )
                     self.semantic_anchors[label].lerp_(
-                        proto.to(self.semantic_anchors.dtype), alpha
+                        proto.to(self.semantic_anchors.dtype), self.anchor_candidate_mix
                     )
 
     @torch.no_grad()
@@ -1921,20 +1908,128 @@ class FedDSA(Server):
         )
 
     @torch.no_grad()
-    def apply_prototype_trust(self):
-        fast = torch.nan_to_num(self.semantic_anchors.float(), nan=0.0, posinf=0.0, neginf=0.0)
-        stable = torch.nan_to_num(self.stable_semantic_anchors.float(), nan=0.0, posinf=0.0, neginf=0.0)
-        delta = fast - stable
-        beta = self.prototype_trust(delta, stable)
-        updated = stable + delta * beta.view(-1, 1)
-        self.semantic_anchors.copy_(updated.to(device=self.device, dtype=self.semantic_anchors.dtype))
+    def apply_prototype_trust(self, anchor_before=None):
+        candidate = self.semantic_anchors.detach().float()
+        if not self.raar_enabled:
+            self.last_prototype_trust_raw = torch.ones(candidate.size(0), device=candidate.device)
+            self.last_prototype_trust_coefficient = self.last_prototype_trust_raw.clone()
+            return
+        if anchor_before is None:
+            raise ValueError("RAAR requires the pre-update anchor bank")
+        self.apply_raar_prior_refinement(anchor_before.detach().float(), candidate)
+
+    @torch.no_grad()
+    def candidate_update_confidence(self, stable, candidate, prior_beta):
+        scores, masks, variances, weights, audits = [], [], [], [], []
+        for client in self.selected_clients:
+            cache = getattr(client, "anchor_candidate_evidence", None)
+            if (cache is None or cache.get("round") != self.current_round
+                    or not client.candidate_next_gap or cache.get("candidate_next_gap") is not True):
+                raise RuntimeError("NextGap RAAR requires fresh evidence from every selected client")
+            evidence = marginal_raar_direction_scores(
+                cache["support_features"], cache["support_labels"],
+                cache["query_features"], cache["query_labels"],
+                client.model.shared_projector, client.model.shared_head, stable, candidate,
+                prior_beta, client.utility_inner_lr, client.lamda, client.mcl, cache["mcl_gap"],
+                max_weight=self.candidate_trust_max_weight, mcl_gap_class_cap=True,
+                **candidate_next_gap_kwargs(client, cache))
+            audit = evidence.get("next_gap_point_audit")
+            if not audit or len(audit["raw_gaps"]) != 3:
+                raise RuntimeError("NextGap B3 point audit is missing")
+            audits.append({"client": int(client.id), **audit})
+            scores.append(evidence["segment_scores"])
+            masks.append(evidence["segment_valid"])
+            variances.append(evidence["segment_query_noise_variance"])
+            weights.append(evidence["query_samples"])
+        shape = (0, 3, stable.size(0))
+        scores = torch.stack(scores) if scores else stable.new_empty(shape)
+        masks = torch.stack(masks) if masks else torch.empty(shape, device=stable.device, dtype=torch.bool)
+        variances = torch.stack(variances) if variances else stable.new_empty(shape)
+        previous = getattr(self, "candidate_noise_state", [None] * 3)
+        estimates = [cohort_candidate_confidence(
+            scores[:, point], masks[:, point], variances[:, point],
+            torch.tensor(weights, device=stable.device), self.num_clients,
+            previous_state=previous[point], ema=self.utility_ema) for point in range(3)]
+        self.candidate_noise_state = [value["state"] for value in estimates]
+        proposal = propose_marginal_raar_beta(prior_beta, estimates, self.candidate_trust_max_weight)
+        self.candidate_gain_stats = {
+            **proposal["summary"], "available_clients": len(weights),
+            "candidate_trust_scoring": "prior_marginal",
+            "confidence_noise_model": "query_split_cohort",
+            "score_query_batch": 3, "acceptance_query_batch": 2,
+            "mcl_gap_included": True, "mcl_gap_class_cap": True,
+            "agreement_in_virtual_update": False, "utility_weights_in_virtual_update": False,
+            "quality_mean": [value["mean"].cpu().tolist() for value in estimates],
+            "standard_error": [value["standard_error"].cpu().tolist() for value in estimates],
+            "current_quality_mean": [value["current_mean"].cpu().tolist() for value in estimates],
+            "current_standard_error": [value["current_standard_error"].cpu().tolist() for value in estimates],
+            "effective_clients": [value["effective_clients"].cpu().tolist() for value in estimates],
+            "favorable_evidence": proposal["favorable_evidence"].cpu().tolist(),
+            "adverse_evidence": proposal["adverse_evidence"].cpu().tolist(),
+            "candidate_next_gap_score_audit": {"clients": audits, "full_cohort": True,
+                "query_batch": 3, "bank_dependent_global_gap_gradient": True},
+            "evidence_role": "training signal; conditional query uncertainty, not a calibrated full-training interval",
+            # shortcut: cached oracle calls omit network payloads; account for them before cost comparisons.
+            "oracle_communication": {"accounted": False,
+                "scope": "Simulator accesses cached client features and local projector/head; existing payload totals exclude oracle calls"},
+        }
+        for key in ("query_mean_variance", "client_sampling_variance", "temporal_mean_variance",
+                    "negative_mass", "observed_population_fraction"):
+            self.candidate_gain_stats[key] = [value[key].cpu().tolist() for value in estimates]
+        return proposal["beta"].to(stable)
+
+    @torch.no_grad()
+    def apply_raar_prior_refinement(self, current, candidate):
+        stable = self.stable_semantic_anchors.detach().float()
+        prior = self.prototype_trust(candidate - stable, stable).detach()
+        observed = torch.zeros_like(prior, dtype=torch.bool)
+        for label in self.global_protos:
+            if 0 <= int(label) < prior.numel():
+                observed[int(label)] = True
+        score_origin = stable.clone()
+        score_origin[~observed] = candidate[~observed]
+        proposed = self.candidate_update_confidence(score_origin, candidate, prior)
+        proposed = torch.where(observed, proposed, prior)
+        acceptance = CachedRAARQueries(self.selected_clients, self.current_round, stable,
+                                      candidate, self.num_clients, "allocation")
+        decision = validate_raar_proposal(prior, proposed, acceptance.evaluate,
+                                          self.candidate_trust_max_weight)
+        beta = decision["beta"]
+        updated, components = apply_raar_beta(current, candidate, stable, beta, self.anchor_candidate_mix)
+        self.last_prototype_trust_raw = prior.clone()
+        self.last_prototype_trust_coefficient = beta.clone()
+        self.candidate_gain_stats.update(
+            proposal_only=False, original_geometry_beta=prior.cpu().tolist(),
+            proposed_beta=proposed.cpu().tolist(), applied_beta=beta.cpu().tolist(),
+            effective_prototype_weights=(self.anchor_candidate_mix * beta).cpu().tolist(),
+            observed_prototype_classes=int(observed.sum()),
+            finite_acceptance={**{key: value for key, value in decision.items() if key != "beta"},
+                "query_batch": 2, "uses_test_data": False,
+                "bank_evaluations": acceptance.bank_evaluations},
+            component_audit={
+                "forward_mean_l2": float(components["forward_component"].norm(dim=1).mean()),
+                "stable_return_mean_l2": float(components["return_component"].norm(dim=1).mean()),
+                "actual_step_mean_l2": float((updated - current).norm(dim=1).mean()),
+                "decomposition_max_abs_l2_error": components["decomposition_max_abs_l2_error"]},
+            same_state_movement_comparison=compare_raar_movement(
+                current, candidate, stable, prior, beta, self.anchor_candidate_mix),
+            stable_return_retained=True, coefficient_one_is_fixed_ema=True,
+            prototype_aggregation="uniform_client_mean")
+        if getattr(self.args, "raar_diagnostics", False):
+            diagnostic = CachedRAARQueries(self.selected_clients, self.current_round, stable,
+                                          candidate, self.num_clients, "diagnostic")
+            self.candidate_gain_stats["independent_refinement_diagnostic"] = {
+                **diagnostic.evaluate(beta, prior), "feeds_update": False, "query_batch": 4}
+        self.semantic_anchors.copy_(updated.to(self.semantic_anchors))
 
     @torch.no_grad()
     def prototype_trust(self, delta, stable):
         num_classes = delta.size(0)
         device = delta.device
         beta = torch.ones(num_classes, device=device, dtype=torch.float32)
-        if self.fast_anchor_proto_trust == "off":
+        if not self.raar_enabled:
+            self.last_base_prototype_trust = beta.clone()
+            self.last_trust_utility_multiplier = beta.clone()
             return beta
 
         signal = delta.float().pow(2).sum(dim=1).clamp_min(0.0)
@@ -1958,10 +2053,92 @@ class FedDSA(Server):
                 has_stats[label] = True
 
         if torch.any(has_stats):
-            raw_beta = signal / (signal + noise + 1e-12)
             support_trust = support / (support + 1.0)
-            beta[has_stats] = (raw_beta * support_trust).clamp(0.0, 1.0)[has_stats]
+            harm = self.negative_raw_utility(signal)
+            uncertainty = noise + self.utility_trust_penalty * signal * harm
+            confidence = signal / (signal + uncertainty + 1e-12) * support_trust
+            beta[has_stats] = confidence.clamp(0, 1)[has_stats]
+            # Diagnostic decomposition only; there is no independently configurable trust branch.
+            base = torch.ones_like(beta)
+            base[has_stats] = (signal / (signal + noise + 1e-12) * support_trust)[has_stats]
+            multiplier = torch.ones_like(beta)
+            positive = has_stats & (base > 0)
+            multiplier[positive] = beta[positive] / base[positive]
+            self.last_base_prototype_trust = base
+            self.last_trust_utility_multiplier = multiplier
+        else:
+            self.last_base_prototype_trust = beta.clone()
+            self.last_trust_utility_multiplier = beta.clone()
         return beta
+
+
+    @torch.no_grad()
+    def update_raw_utility(self, observed, count):
+        """Keep a separate EMA in loss units, before any z-score or shuffle."""
+        if not self.prototype_utility and not self.raar_enabled:
+            return
+        self.require_finite_upload(observed, "raw_utility")
+        self.require_finite_upload(count, "raw_utility_count")
+        if not hasattr(self, "raw_class_utility"):
+            self.raw_class_utility = torch.zeros(self.num_classes, device=self.device)
+        observed = observed.detach().to(device=self.device, dtype=torch.float32)
+        count = count.detach().to(device=self.device, dtype=torch.float32)
+        valid = count > 0
+        self.raw_class_utility[valid] = (
+            self.raw_class_utility[valid] * (1 - self.utility_ema)
+            + observed[valid] * self.utility_ema
+        )
+        self.raw_class_utility_count = count.clone()
+        if not hasattr(self, "raw_class_utility_total_count"):
+            self.raw_class_utility_total_count = torch.zeros_like(count)
+        self.raw_class_utility_total_count += count
+
+
+    @torch.no_grad()
+    def utility_for_update(self):
+        """Change score-to-class assignment without changing score estimation or training RNG."""
+        raw = self.raw_class_utility
+        count = self.raw_class_utility_count
+        applied = raw.detach().clone()
+        sources = torch.arange(raw.numel(), device=raw.device)
+        valid = torch.nonzero(count > 0, as_tuple=False).view(-1)
+        mode = getattr(self, "utility_signal_mode", "observed")
+        if mode == "shuffled" and valid.numel() > 1:
+            generator = torch.Generator(device='cpu')
+            generator.manual_seed((0x5A17 + 1000003 * int(self.random_seed) + int(self.current_round)) % (2 ** 63 - 1))
+            permutation = torch.randperm(valid.numel(), generator=generator).to(raw.device)
+            source = valid.index_select(0, permutation)
+            applied[valid] = raw.index_select(0, source)
+            sources[valid] = source
+        elif mode == "uniform" and valid.numel():
+            # Preserve the mean of the eligible class scores, while removing
+            # their class-specific variation. Missing-evidence masking remains unchanged.
+            applied.fill_(raw.index_select(0, valid).mean())
+            sources.fill_(-1)
+        elif mode == "geometry":
+            # Explicit component ablation: utility is measured for diagnostics
+            # but contributes zero uncertainty to the otherwise unchanged rule.
+            applied.zero_()
+            sources.fill_(-2)
+        self.last_applied_raw_utility = applied
+        self.last_utility_source_class = sources
+        return applied
+
+
+    @torch.no_grad()
+    def negative_raw_utility(self, reference):
+        """Task-harm evidence in the same round; missing observations are neutral."""
+        harm = torch.zeros_like(reference)
+        raw = getattr(self, "raw_class_utility", None)
+        count = getattr(self, "raw_class_utility_count", None)
+        if raw is None or count is None:
+            return harm
+        self.require_finite_upload(raw, "raw_utility_ema")
+        self.require_finite_upload(count, "raw_utility_count")
+        raw = self.utility_for_update().to(device=reference.device, dtype=reference.dtype)
+        valid = count.to(reference.device) > 0
+        harm[valid] = (-torch.tanh(raw[valid] / self.utility_trust_temperature)).clamp_min(0)
+        return harm
 
     @torch.no_grad()
     def set_trusted_proto_memory(self, memory):

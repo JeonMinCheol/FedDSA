@@ -1,27 +1,26 @@
 /*
 !/.gitignore
-!/system/
+!/docs/
 runs/
 __pycache__/
 xray/vendor/
 
 # Generated training output and temporary files.
-/system/temp/
-/system/**/temp/
-/system/**/tmp/
-/system/**/logs/
-/system/**/log/
-/system/**/checkpoints/
-/system/**/results/
+/HtFLlib/system/temp/
+/HtFLlib/system/**/temp/
+/HtFLlib/system/**/tmp/
+/HtFLlib/system/**/logs/
+/HtFLlib/system/**/log/
+/HtFLlib/system/**/checkpoints/
+/HtFLlib/system/**/results/
+/HtFLlib/system/*.sbatch
+/HtFLlib/system/test_*.py
 *.py[cod]
 *.log
 *.out
 *.err
-*.tmp
-*.temp
 *.pt
 *.pth
 *.ckpt
 *.safetensors
 *.pkl
-

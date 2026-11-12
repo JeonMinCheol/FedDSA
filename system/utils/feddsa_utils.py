@@ -6,6 +6,64 @@ import torch
 import torch.nn.functional as F
 
 
+def configure_utility_module(args):
+    """Configure the adopted RAAR without changing the local CAU/PCW switches."""
+    gamma = getattr(args, "anchor_candidate_mix", None)
+    legacy_gamma = getattr(args, "moving_anchor_ema", None)
+    if gamma is not None and legacy_gamma is not None and gamma != legacy_gamma:
+        raise ValueError("anchor_candidate_mix and moving_anchor_ema name the same prototype fraction")
+    gamma = float(gamma if gamma is not None else legacy_gamma if legacy_gamma is not None else 0.5)
+    momentum = float(getattr(args, "anchor_momentum", 0.9999))
+    if not math.isfinite(gamma) or not 0 <= gamma <= 1:
+        raise ValueError("Prototype fraction gamma must be in [0,1]")
+    if not math.isfinite(momentum) or not 0 <= momentum <= 1:
+        raise ValueError("Slow reference anchor momentum must be in [0,1]")
+    trust = getattr(args, "fast_anchor_proto_trust", "auto")
+    if trust not in {"off", "auto"}:
+        raise ValueError("Use the adopted RAAR (auto) or disable it (off)")
+    if not getattr(args, "experimental_linear_cosine_agreement", True):
+        raise ValueError("Current FedDSA uses the linear classifier and actual classifier logits for PCW")
+    if getattr(args, "reliability_weighted_aggregation", False):
+        raise ValueError("Current FedDSA uses uniform client prototype aggregation")
+    args.anchor_candidate_mix = args.moving_anchor_ema = gamma
+    args.anchor_momentum = momentum
+    args.raar_enabled = (trust == "auto" and not getattr(args, "disable_prototype_trust", False)
+                         and not getattr(args, "fixed_anchor", False))
+    args.candidate_next_gap = args.candidate_gain_enabled = args.raar_enabled
+    args.prototype_count_aggregation = False
+    args.mcl_gap_class_cap = True
+    args.prototype_trust_source = "candidate_gain"
+    args.candidate_trust_reference = "geometry_prior"
+    args.candidate_trust_scoring = "prior_marginal"
+    args.candidate_trust_noise_model = "query_split_cohort"
+    args.candidate_trust_max_weight = 1.5
+    args.utility_trust_penalty = 0.25
+    args.utility_trust_temperature = 0.001
+    if args.raar_enabled:
+        validate_candidate_next_gap(args)
+    return args
+
+
+def validate_candidate_next_gap(args):
+    """NextGap is a server policy; preserve the local CAU and SGD gap states."""
+    if getattr(args, "algorithm", "FedDSA") != "FedDSA":
+        raise ValueError("NextGap requires FedDSA")
+    if (getattr(args, "new_anchor_mode", "none") != "none"
+            or getattr(args, "semantic_gate_mode", "off") != "off"
+            or any(bool(getattr(args, key, False)) for key in (
+                "dual_disagreement_gate", "freeze_semantic_anchor", "scalar_reliability_state",
+                "reliability_weighted_aggregation", "use_amp"))):
+        raise ValueError("NextGap RAAR requires ordinary single anchors and full precision")
+    if getattr(args, "mcl_variant", "fedsa") != "fedsa":
+        raise ValueError("NextGap RAAR requires distance-softmax MCL")
+    if getattr(args, "mcl_gap_mode", "min") not in {"min", "max"}:
+        raise ValueError("MCL gap mode must be min or max")
+    ema = float(getattr(args, "utility_ema", 0.25))
+    if not math.isfinite(ema) or not 0 < ema <= 1:
+        raise ValueError("RAAR evidence EMA must be in (0,1]")
+    return args
+
+
 def _mean(values):
     return float(sum(values) / len(values)) if values else math.nan
 
