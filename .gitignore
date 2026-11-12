@@ -1,6 +1,14 @@
 /*
 !/.gitignore
 !/docs/
+
+# Track utility source files while keeping other generated system files ignored.
+!/system/
+/system/*
+!/system/utils/
+/system/utils/*
+!/system/utils/*.py
+
 runs/
 __pycache__/
 xray/vendor/
