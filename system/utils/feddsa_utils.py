@@ -24,13 +24,13 @@ def configure_utility_module(args):
     if not getattr(args, "experimental_linear_cosine_agreement", True):
         raise ValueError("Current FedDSA uses the linear classifier and actual classifier logits for PCW")
     if getattr(args, "reliability_weighted_aggregation", False):
-        raise ValueError("Current FedDSA uses uniform client prototype aggregation")
+        raise ValueError("Class-count prototype aggregation cannot combine reliability weighting")
     args.anchor_candidate_mix = args.moving_anchor_ema = gamma
     args.anchor_momentum = momentum
     args.raar_enabled = (trust == "auto" and not getattr(args, "disable_prototype_trust", False)
                          and not getattr(args, "fixed_anchor", False))
     args.candidate_next_gap = args.candidate_gain_enabled = args.raar_enabled
-    args.prototype_count_aggregation = False
+    args.prototype_count_aggregation = True
     args.mcl_gap_class_cap = True
     args.prototype_trust_source = "candidate_gain"
     args.candidate_trust_reference = "geometry_prior"
@@ -178,3 +178,64 @@ def _demo():
 
 if __name__ == "__main__":
     _demo()
+
+
+@torch.no_grad()
+def aggregate_count_prototypes(records, feat_dim):
+    if type(feat_dim) is not int or feat_dim <= 0:
+        raise ValueError('Positive integer feature dimension required')
+    groups = {};clients = set()
+    for record in records:
+        client = record['client'];protos = record['protos'];counts = record['counts']
+        if type(client) is not int or client < 0 or client in clients:
+            raise ValueError('Each client ID must be a distinct nonnegative integer')
+        clients.add(client)
+        if set(protos) != set(counts):
+            raise ValueError('Every prototype needs its actual class sample count')
+        for label, proto in protos.items():
+            count = counts[label]
+            if (type(label) is not int or label < 0 or type(count) is not int or count <= 0
+                    or not torch.is_tensor(proto) or proto.ndim != 1 or proto.numel() != feat_dim
+                    or not proto.is_floating_point() or not bool(torch.isfinite(proto).all())):
+                raise ValueError('Invalid label, positive count or finite feature vector')
+            groups.setdefault(label, []).append((client, count, proto))
+    weighted = {};scatter = {};support = {};diagnostics = {
+        'aggregation': 'actual_class_sample_count',
+        'estimand': 'pooled-example centroid across observed client class means',
+        'disagreement': 'count-weighted mean squared L2 residual',
+        'support': 'Kish effective number of contributing clients',
+        'class_mean_normalization': False, 'uniform_prototypes': {}, 'by_class': {}}
+    for label, entries in groups.items():
+        reference = entries[0][2]
+        if any(p.dtype != reference.dtype or p.device != reference.device for _, _, p in entries):
+            raise ValueError('Class prototype dtype/device must match')
+        values = torch.stack([p for _, _, p in entries]).double()
+        counts = torch.tensor([n for _, n, _ in entries], dtype=torch.float64, device=values.device)
+        weights = counts / counts.sum()
+        center = (weights[:, None] * values).sum(dim=0)
+        uniform = values.mean(dim=0)
+        disagreement = float((weights * (values-center).square().sum(dim=1)).sum())
+        effective = float(1 / weights.square().sum())
+        weighted[label] = center.to(reference).detach().clone()
+        scatter[label] = disagreement;support[label] = effective
+        scale = math.sqrt(disagreement)
+        influences = []
+        for index, (client, count, _) in enumerate(entries):
+            other_mass = 1-float(weights[index])
+            leave_one_out = ((center-weights[index]*values[index])/other_mass
+                             if other_mass > 0 else center)
+            shift = float((center-leave_one_out).norm())
+            influences.append({'client': client, 'class_sample_count': count,
+                'weight': float(weights[index]), 'leave_one_client_out_shift_l2': shift,
+                'relative_leave_one_client_out_shift': shift/max(scale, 1e-12)})
+        diagnostics['uniform_prototypes'][str(label)] = uniform.cpu().tolist()
+        diagnostics['by_class'][str(label)] = {
+            'client_ids': [client for client, _, _ in entries],
+            'class_sample_counts': [n for _, n, _ in entries],
+            'total_class_samples': int(counts.sum()), 'observed_clients': len(entries),
+            'max_weight': float(weights.max()), 'effective_support': effective,
+            'weighted_disagreement': disagreement,
+            'uniform_to_weighted_center_l2': float((uniform-center).norm()),
+            'weighted_center': center.cpu().tolist(),
+            'uniform_center': uniform.cpu().tolist(), 'client_influence': influences}
+    return weighted, scatter, support, diagnostics

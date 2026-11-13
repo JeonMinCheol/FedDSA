@@ -33,6 +33,7 @@ class clientfeddsa(Client):
         )
 
         self.protos = None
+        self.proto_sample_count = {}
         self.meta_anchor_grad = None
         self.semantic_anchors = None
         self.adaptive_anchors = None
@@ -319,6 +320,8 @@ class clientfeddsa(Client):
                 self.release_model_from_device(model)
 
         self.protos = self.protos_from_sums(proto_sum, proto_count)
+        counts = proto_count.detach().cpu().tolist() if proto_count is not None else []
+        self.proto_sample_count = {label: int(count) for label, count in enumerate(counts) if count > 0}
         return self.protos
 
     def compute_meta_anchor_gradient(self, model):

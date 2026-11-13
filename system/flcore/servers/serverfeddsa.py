@@ -13,7 +13,7 @@ from mmcv.cnn import build_norm_layer
 from flcore.clients.clientbase import load_item, save_item
 from flcore.clients.clientfeddsa import clientfeddsa
 from flcore.servers.serverbase import Server
-from utils.feddsa_utils import prototype_anchor_metrics, configure_utility_module
+from utils.feddsa_utils import prototype_anchor_metrics, configure_utility_module, aggregate_count_prototypes
 from utils.raar_marginal_refinement import marginal_raar_direction_scores, propose_marginal_raar_beta
 from utils.raar_prior_refinement import validate_raar_proposal, apply_raar_beta, compare_raar_movement
 from utils.raar_refinement_probe import CachedRAARQueries
@@ -258,6 +258,8 @@ class FedDSA(Server):
         self.current_round_elapsed_sec = None
         self.total_elapsed_sec = 0.0
         self.current_proto_upload_bytes = 0
+        self.current_proto_feature_upload_bytes = 0
+        self.current_proto_count_upload_bytes = 0
         self.current_anchor_broadcast_bytes = 0
 
         norm_cfg = {"type": "SyncBN", "requires_grad": True}
@@ -342,7 +344,7 @@ class FedDSA(Server):
         )
         if self.prototype_utility:
             print(f"utility_control=local_only anchor_candidate_mix={self.anchor_candidate_mix}")
-        print(f"raar=NextGap enabled={self.raar_enabled} prototype_aggregation=uniform "
+        print(f"raar=NextGap enabled={self.raar_enabled} prototype_aggregation=class_sample_count "
               f"gamma={self.anchor_candidate_mix} reference_momentum={self.anchor_momentum}")
         print("=" * 50)
 
@@ -838,11 +840,11 @@ class FedDSA(Server):
             "pcw_prediction_source": "classifier_logits",
             "virtual_anchor_supervision": {"mcl_gap": True, "agreement_weighting": False},
             "prototype_trust": self.fast_anchor_proto_trust,
-            "raar_version": "nextgap_prior_marginal_uniform_aggregation",
+            "raar_version": "nextgap_prior_marginal_class_count_aggregation",
             "raar_enabled": self.raar_enabled,
             "anchor_candidate_mix": self.anchor_candidate_mix,
             "anchor_momentum": self.anchor_momentum,
-            "prototype_aggregation": "uniform_client_mean",
+            "prototype_aggregation": "class_sample_count",
             "mcl_gap_class_cap": True,
             "raar_nextgap": getattr(self, "candidate_gain_stats", None),
             "role_step_clipping": bool(role_mode),
@@ -870,6 +872,9 @@ class FedDSA(Server):
             "total_elapsed_sec": float(self.total_elapsed_sec),
             "communication": {
                 "prototype_upload_bytes": int(self.current_proto_upload_bytes),
+                "prototype_feature_upload_bytes": int(self.current_proto_feature_upload_bytes),
+                "prototype_class_count_upload_bytes": int(self.current_proto_count_upload_bytes),
+                "prototype_class_count_encoding": "int64 logical payload",
                 "anchor_broadcast_bytes": int(self.current_anchor_broadcast_bytes),
                 "anchor_broadcast_roles": anchor_role_count,
                 "selected_clients": int(len(self.selected_clients)),
@@ -1158,8 +1163,12 @@ class FedDSA(Server):
                 for label, proto in protos.items():
                     if proto is not None and not isinstance(proto, list):
                         self.require_finite_upload(torch.as_tensor(proto), f"prototype[{label}]", client)
-                uploaded.append(protos)
-                records.append((protos, {int(label): 1 for label in protos}))
+                counts = getattr(client, "proto_sample_count", {})
+                if (not isinstance(counts, dict) or set(counts) != set(protos)
+                        or any(type(value) is not int or value <= 0 for value in counts.values())):
+                    raise ValueError(f"Client {client.id} must upload a positive actual sample count for every prototype")
+                uploaded.append({"client": int(client.id), "protos": protos, "counts": counts})
+                records.append((protos, counts))
             meta_grad = getattr(client, "meta_anchor_grad", None)
             if meta_grad is not None:
                 grad = torch.as_tensor(meta_grad, dtype=torch.float32).detach().cpu()
@@ -1218,9 +1227,11 @@ class FedDSA(Server):
                         paired_validation_counts.append(client_validation_count)
 
         self.proto_records = records
-        self.current_proto_upload_bytes = int(
+        self.current_proto_feature_upload_bytes = int(
             sum(len(protos) * self.feat_dim * 4 for protos, _ in records)
         )
+        self.current_proto_count_upload_bytes = sum(len(counts) * 8 for _, counts in records)
+        self.current_proto_upload_bytes = self.current_proto_feature_upload_bytes + self.current_proto_count_upload_bytes
         if meta_grads:
             weights = torch.as_tensor(meta_weights, dtype=torch.float32)
             weights = weights / weights.sum().clamp_min(1e-12)
@@ -1369,29 +1380,12 @@ class FedDSA(Server):
         save_item(self.global_protos, self.role, "global_protos", self.save_folder_name)
 
     def aggregate_protos(self, uploaded):
-        groups = defaultdict(list)
-        for protos in uploaded:
-            for label, proto in protos.items():
-                if proto is None or isinstance(proto, list):
-                    continue
-                proto = torch.as_tensor(proto, dtype=torch.float32).detach().cpu().view(-1)
-                if proto.numel() == self.feat_dim:
-                    groups[int(label)].append(proto)
-
-        self.proto_disagreement = {}
-        self.proto_support = {}
-        self.proto_reliability = {}
-        global_protos = {}
-        for label, proto_list in groups.items():
-            proto_tensor = torch.stack(proto_list, dim=0)
-            center = proto_tensor.mean(dim=0)
-            global_proto = center
-            self.proto_reliability[int(label)] = 1.0
-            global_protos[int(label)] = global_proto
-            disagreement = (proto_tensor - global_proto.view(1, -1)).pow(2).sum(dim=1)
-            self.proto_disagreement[int(label)] = float(disagreement.mean().item())
-            self.proto_support[int(label)] = float(len(proto_list))
-        return global_protos
+        protos, scatter, support, diagnostics = aggregate_count_prototypes(uploaded, self.feat_dim)
+        self.proto_disagreement = scatter
+        self.proto_support = support
+        self.proto_reliability = {label: 1.0 for label in protos}
+        self.prototype_aggregation_diagnostics = diagnostics
+        return protos
 
     @torch.no_grad()
     def update_semantic_anchors(self):
@@ -2014,7 +2008,7 @@ class FedDSA(Server):
             same_state_movement_comparison=compare_raar_movement(
                 current, candidate, stable, prior, beta, self.anchor_candidate_mix),
             stable_return_retained=True, coefficient_one_is_fixed_ema=True,
-            prototype_aggregation="uniform_client_mean")
+            prototype_aggregation="class_sample_count")
         if getattr(self.args, "raar_diagnostics", False):
             diagnostic = CachedRAARQueries(self.selected_clients, self.current_round, stable,
                                           candidate, self.num_clients, "diagnostic")
