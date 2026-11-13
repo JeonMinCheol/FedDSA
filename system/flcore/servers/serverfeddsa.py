@@ -1976,9 +1976,17 @@ class FedDSA(Server):
         beta = decision["beta"]
         updated, components = apply_raar_beta(current, candidate, stable, beta, self.anchor_candidate_mix)
         self.last_prototype_trust_raw = prior.clone()
+        self.candidate_gain_stats["proposed_mean_extra_interval_increment"] = (
+            self.candidate_gain_stats.pop("mean_extra_interval_increment", 0.0)
+        )
         self.candidate_gain_stats.update(
             proposal_only=False, original_geometry_beta=prior.cpu().tolist(),
             proposed_beta=proposed.cpu().tolist(), applied_beta=beta.cpu().tolist(),
+            proposed_mean_beta=float(proposed.mean()),
+            mean_beta=float(beta.mean()),
+            raised_classes=int((beta > prior + 1e-8).sum()),
+            lowered_classes=int((beta < prior - 1e-8).sum()),
+            unchanged_classes=int(((beta - prior).abs() <= 1e-8).sum()),
             effective_prototype_weights=(self.anchor_candidate_mix * beta).cpu().tolist(),
             observed_prototype_classes=int(observed.sum()),
             finite_acceptance={**{key: value for key, value in decision.items() if key != "beta"},
