@@ -465,7 +465,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_amp', type=str2bool, nargs='?', const=True, default=False)
     experimental.add_argument('--experimental_linear_cosine_agreement', type=str2bool,
                         nargs='?', const=True, default=True,
-                        help="Compatibility option; FedDSA uses a linear classifier; PCW uses actual classifier logits")
+                        help="Compatibility option; FedDSA uses a linear classifier")
     experimental.add_argument('--anchor_codebook', type=str, default='gaussian',
                         choices=['gaussian', 'simplex'],
                         help="[EXPERIMENTAL] Initial anchor geometry; simplex is a fixed-codebook diagnostic")
@@ -578,6 +578,9 @@ if __name__ == "__main__":
     parser.add_argument('--agreement_weighting', '--agrement_weighting',
                         dest='agreement_weighting', type=str2bool, nargs='?', const=True, default=True,
                         help="FedDSA: enable anchor/head agreement sample weighting")
+    parser.add_argument('--pcw_prediction_source', choices=['classifier_logits', 'cosine'],
+                        default='classifier_logits',
+                        help="PCW correctness from actual linear logits or cosine with classifier weight directions; classification stays linear")
     parser.add_argument('--anchor_momentum', '--stable_ema', '--ema',
                         dest='anchor_momentum', type=float, default=0.9999,
                         help="FedDSA: stable anchor EMA momentum")

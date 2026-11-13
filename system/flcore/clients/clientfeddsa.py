@@ -102,6 +102,7 @@ class clientfeddsa(Client):
         self.agreement_weighting = bool(
             getattr(args, "agreement_weighting", True)
         )
+        self.pcw_prediction_source = args.pcw_prediction_source
         self.dual_disagreement_gate = bool(
             getattr(args, "dual_disagreement_gate", False)
         )
@@ -573,8 +574,12 @@ class clientfeddsa(Client):
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
                         rep, logits = self.forward_rep_logits(model, x)
                         task_loss = self.loss(logits, y)
-                        # PCW judges the actual classifier prediction, including its bias.
-                        anchor_loss, anchor_metrics = self.anchor_loss(rep, y, logits.detach())
+                        pcw_logits = logits.detach()
+                        if (self.agreement_weighting
+                                and getattr(self, "pcw_prediction_source", "classifier_logits") == "cosine"):
+                            with torch.no_grad():
+                                pcw_logits = model.agreement_logits(rep)
+                        anchor_loss, anchor_metrics = self.anchor_loss(rep, y, pcw_logits)
                         loss = task_loss + anchor_loss
 
                     if not torch.isfinite(loss):

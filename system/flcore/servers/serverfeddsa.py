@@ -326,7 +326,7 @@ class FedDSA(Server):
         print(
             f"feat_dim={self.feat_dim} "
             "anchor_losses=raw(mse+mcl) "
-            f"classifier=linear agreement_head=classifier_logits"
+            f"classifier=linear agreement_head={args.pcw_prediction_source}"
         )
         print(
             f"anchors={self.anchor_mode} "
@@ -837,7 +837,7 @@ class FedDSA(Server):
                 **self.utility_validation_metrics,
             },
             "anchor_update_norm": float(self.last_anchor_update_norm),
-            "pcw_prediction_source": "classifier_logits",
+            "pcw_prediction_source": getattr(self.args, "pcw_prediction_source", "classifier_logits"),
             "virtual_anchor_supervision": {"mcl_gap": True, "agreement_weighting": False},
             "prototype_trust": self.fast_anchor_proto_trust,
             "raar_version": "nextgap_prior_marginal_class_count_aggregation",
