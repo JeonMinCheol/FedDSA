@@ -595,7 +595,7 @@ class clientfeddsa(Client):
 
             self.collect_protos(model=model)
             if self.prototype_utility or getattr(self, "candidate_gain_enabled", False):
-                utility = self.compute_anchor_utility(model)
+                utility = self.probe_anchor_utility(model)
             if self.meta_enabled:
                 meta_grad = self.compute_meta_anchor_gradient(model)
                 if meta_grad is not None:
@@ -620,6 +620,15 @@ class clientfeddsa(Client):
 
         self.train_time_cost["num_rounds"] += 1
         self.train_time_cost["total_cost"] += time.time() - start_time
+
+    def probe_anchor_utility(self, model):
+        """Keep CAU sampling from advancing subsequent training/prototype RNG."""
+        devices = []
+        if self.device.type == "cuda":
+            devices = [self.device.index if self.device.index is not None
+                       else torch.cuda.current_device()]
+        with torch.random.fork_rng(devices=devices):
+            return self.compute_anchor_utility(model)
 
     def anchor_loss(self, feats, y, logits):
         zero = feats.new_zeros(())
