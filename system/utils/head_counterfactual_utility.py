@@ -61,9 +61,7 @@ def head_gains(client, model, support, query, validation=None, diagnostic=None):
             params.append(head.bias)
 
         def classify(z, values):
-            if model.shared_classifier_mode == 'linear':
-                return F.linear(z, values[2], values[3])
-            return model.shared_classifier_scale * (F.normalize(z, dim=1) @ F.normalize(values[2], dim=1).t())
+            return F.linear(z, values[2], values[3])
 
         z = F.linear(features[0], params[0], params[1])
         logits = classify(z, params)

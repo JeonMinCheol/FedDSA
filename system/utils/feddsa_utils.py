@@ -21,16 +21,10 @@ def configure_utility_module(args):
     trust = getattr(args, "fast_anchor_proto_trust", "auto")
     if trust not in {"off", "auto"}:
         raise ValueError("Use the adopted RAAR (auto) or disable it (off)")
-    if not getattr(args, "experimental_linear_cosine_agreement", True):
-        raise ValueError("Current FedDSA requires the linear classifier")
-    pcw_source = getattr(args, "pcw_prediction_source", "classifier_logits")
-    if pcw_source not in {"classifier_logits", "cosine"}:
-        raise ValueError("PCW prediction source must be classifier_logits or cosine")
     if getattr(args, "reliability_weighted_aggregation", False):
         raise ValueError("Class-count prototype aggregation cannot combine reliability weighting")
     args.anchor_candidate_mix = args.moving_anchor_ema = gamma
     args.anchor_momentum = momentum
-    args.pcw_prediction_source = pcw_source
     args.raar_enabled = (trust == "auto" and not getattr(args, "disable_prototype_trust", False)
                          and not getattr(args, "fixed_anchor", False))
     args.candidate_next_gap = args.candidate_gain_enabled = args.raar_enabled

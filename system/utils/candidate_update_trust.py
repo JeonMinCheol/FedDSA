@@ -35,15 +35,11 @@ def anchor_coordinate_direction_scores(gradient, direction):
             'class_cosine': class_cosine, 'relative_gradient_norm': relative_norm}
 
 
-def virtual_query_loss(support_features, support_labels, query_features, query_labels,
+def virtual_support_update(support_features, support_labels,
                        projector, head, anchors, inner_lr, mse_weight, mcl_weight,
                        mcl_gap, create_graph=False, mcl_gap_class_cap=False,
                        next_gap_context=None):
-    """One functional support update; agreement is intentionally absent.
-
-    Explicit Euclidean distances support the mixed derivative through the
-    virtual update. No live model parameter, gradient, buffer or RNG is changed.
-    """
+    """Prepare one differentiable support update for independent query losses."""
     if not isinstance(projector,torch.nn.Linear) or not isinstance(head,torch.nn.Linear):
         raise ValueError('Candidate trust requires a linear projector and classifier')
     if projector.bias is None:
@@ -56,9 +52,7 @@ def virtual_query_loss(support_features, support_labels, query_features, query_l
         if head.bias is not None:parameters.append(head.bias)
         parameters=[value.detach().to(anchors).clone().requires_grad_(True) for value in parameters]
         support=support_features.detach().to(anchors)
-        query=query_features.detach().to(anchors)
         sy=support_labels.to(device=anchors.device,dtype=torch.long)
-        qy=query_labels.to(device=anchors.device,dtype=torch.long)
         z=F.linear(support,parameters[0],parameters[1])
         logits=F.linear(z,parameters[2],parameters[3] if len(parameters)>3 else None)
         objective=F.cross_entropy(logits,sy)
@@ -71,9 +65,27 @@ def virtual_query_loss(support_features, support_labels, query_features, query_l
             objective=objective+float(mcl_weight)*F.cross_entropy(-distances,sy)
         gradients=torch.autograd.grad(objective,parameters,create_graph=create_graph)
         adapted=[value-float(inner_lr)*gradient for value,gradient in zip(parameters,gradients)]
-        query_z=F.linear(query,adapted[0],adapted[1])
-        query_logits=F.linear(query_z,adapted[2],adapted[3] if len(adapted)>3 else None)
-        return F.cross_entropy(query_logits,qy)
+        return adapted
+
+def virtual_query_loss(support_features, support_labels, query_features, query_labels,
+                       projector, head, anchors, inner_lr, mse_weight, mcl_weight,
+                       mcl_gap, create_graph=False, mcl_gap_class_cap=False,
+                       next_gap_context=None):
+    """Functional support step and query CE; live parameters and RNG stay unchanged."""
+    with torch.enable_grad():
+        adapted=virtual_support_update(support_features,support_labels,projector,head,
+            anchors,inner_lr,mse_weight,mcl_weight,mcl_gap,create_graph,
+            mcl_gap_class_cap,next_gap_context)
+        return adapted_query_loss(query_features,query_labels,adapted,anchors)
+
+
+def adapted_query_loss(query_features,query_labels,adapted,anchors):
+    """Evaluate an independent query against an already prepared virtual step."""
+    query=query_features.detach().to(anchors)
+    qy=query_labels.to(device=anchors.device,dtype=torch.long)
+    query_z=F.linear(query,adapted[0],adapted[1])
+    query_logits=F.linear(query_z,adapted[2],adapted[3] if len(adapted)>3 else None)
+    return F.cross_entropy(query_logits,qy)
 
 
 def candidate_direction_scores(support_features, support_labels, query_features,

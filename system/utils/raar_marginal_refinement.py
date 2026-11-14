@@ -5,7 +5,8 @@ import torch
 
 from utils.candidate_update_trust import (
     anchor_coordinate_direction_scores,
-    virtual_query_loss,
+    virtual_support_update,
+    adapted_query_loss,
 )
 from utils.raar_prior_refinement import _strength
 
@@ -130,23 +131,26 @@ def marginal_raar_direction_scores(support_features, support_labels, query_featu
         bank = stable.detach() + weights * (candidate.detach() - stable.detach())
         bank = torch.where(weights == 1, candidate.detach(), bank)
         gradients, half_losses = [], []
-        for features, labels in ((query_features[:split], query_labels[:split]),
-                                 (query_features[split:], query_labels[split:])):
+        with torch.enable_grad():
+            measured = bank.detach().clone().requires_grad_(True)
+            adapted = virtual_support_update(support_features,support_labels,
+                projector,head,measured,inner_lr,mse_weight,mcl_weight,mcl_gap,
+                create_graph=True,mcl_gap_class_cap=mcl_gap_class_cap,
+                next_gap_context=next_gap_context)
+        for half, (features, labels) in enumerate(((query_features[:split], query_labels[:split]),
+                                                  (query_features[split:], query_labels[split:]))):
             with torch.enable_grad():
-                measured = bank.detach().clone().requires_grad_(True)
-                loss = virtual_query_loss(support_features, support_labels, features, labels,
-                                          projector, head, measured, inner_lr, mse_weight,
-                                          mcl_weight, mcl_gap, create_graph=True,
-                                          mcl_gap_class_cap=mcl_gap_class_cap,
-                                          **({'next_gap_context':next_gap_context} if next_gap_context is not None else {}))
+                loss = adapted_query_loss(features,labels,adapted,measured)
                 if not bool(torch.isfinite(loss)):
                     raise FloatingPointError('Marginal virtual query loss is nonfinite')
-                gradient = torch.autograd.grad(loss, measured, allow_unused=True)[0]
+                gradient = torch.autograd.grad(loss, measured, allow_unused=True,
+                                               retain_graph=(half == 0))[0]
                 gradient = torch.zeros_like(measured) if gradient is None else gradient.detach()
             if not bool(torch.isfinite(gradient).all()):
                 raise FloatingPointError('Marginal virtual query gradient is nonfinite')
             gradients.append(gradient.double())
-            half_losses.append(float(loss.detach()))
+            half_losses.append(loss.detach())
+        del adapted, measured, loss
         first, second = gradients
         combined = fraction * first + (1 - fraction) * second
         scale = (fraction * first.square().sum() + (1 - fraction) * second.square().sum()).sqrt()
@@ -164,7 +168,10 @@ def marginal_raar_direction_scores(support_features, support_labels, query_featu
         cosines.append(auxiliary['class_cosine'])
         relative_norms.append(combined.norm(dim=1) / scale.clamp_min(1e-300))
         point_gradients.append(combined)
-        losses.append(fraction * half_losses[0] + (1 - fraction) * half_losses[1])
+        losses.extend(half_losses)
+    scalar_losses=torch.stack([value.double() for value in losses]).cpu().tolist()
+    losses=[fraction*scalar_losses[i]+(1-fraction)*scalar_losses[i+1]
+            for i in range(0,len(scalar_losses),2)]
     result = {
         'segment_scores': torch.stack(scores),
         'segment_valid': (norm > 0).expand(3, -1).clone(),
@@ -192,9 +199,9 @@ def marginal_raar_direction_scores(support_features, support_labels, query_featu
         from utils.raar_next_gap import resolve_next_gap
         result['next_gap_point_audit']={
             'next_local_gap':next_gap_context['next_local_gap'],'mode':next_gap_context['mode'],
-            'raw_gaps':[float(resolve_next_gap(torch.where(point[:,None]==1,candidate.detach(),
+            'raw_gaps':torch.stack([resolve_next_gap(torch.where(point[:,None]==1,candidate.detach(),
                 stable.detach()+point[:,None]*(candidate.detach()-stable.detach())),
-                mcl_gap,next_gap_context)) for point in coefficients],
+                mcl_gap,next_gap_context).double() for point in coefficients]).cpu().tolist(),
             'bank_dependent_global_gap_gradient':True,'latest_local_prototypes':True,
             'same_context_for_both_query_halves':True}
     return result

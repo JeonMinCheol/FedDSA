@@ -3,11 +3,14 @@ import math
 
 import torch
 
-from utils.anchor_candidate_probe import one_step_anchor_bank_losses
+from utils.anchor_candidate_probe import one_step_anchor_bank_losses, prepare_anchor_bank_probe
 from utils.raar_next_gap import candidate_next_gap_kwargs
+from utils.frozen_anchor_geometry import FrozenAnchorGeometry
 
 
 class CachedRAARQueries:
+    """Round-scoped oracle; client models and evidence remain fixed during use."""
+
     def __init__(self,clients,round_idx,stable,candidate,population_clients,query_prefix):
         if query_prefix not in {'allocation','diagnostic'}:
             raise ValueError('Choose cached acceptance batch2 or diagnostic batch4')
@@ -26,6 +29,7 @@ class CachedRAARQueries:
         if self.population<self.expected:
             raise ValueError('The population must include the selected client cohort')
         self.cache={}
+        self.prepared_clients={}
         self.bank_evaluations=0
 
     def _losses(self,beta):
@@ -35,16 +39,31 @@ class CachedRAARQueries:
             bank=self.stable+weights*(self.candidate-self.stable)
             bank=torch.where(weights==1,self.candidate,bank)
             losses=[]
+            geometries={}
             for client in self.clients:
                 evidence=client.anchor_candidate_evidence
-                device=client.model.shared_projector.weight.device
+                identity=id(client)
+                if identity not in self.prepared_clients:
+                    self.prepared_clients[identity]=prepare_anchor_bank_probe(
+                        evidence['support_features'],evidence['support_labels'],
+                        evidence[self.feature_key],evidence[self.label_key],
+                        client.model.shared_projector,client.model.shared_head)
+                prepared=self.prepared_clients[identity]
+                geometry=None
+                if client.mcl and (evidence.get('mcl_gap_class_cap',False)
+                                   or getattr(client,'candidate_next_gap',False)):
+                    device=prepared['params'][0].device
+                    if device not in geometries:
+                        geometries[device]=FrozenAnchorGeometry(bank.detach().to(device=device,dtype=torch.float32))
+                    geometry=geometries[device]
                 result=one_step_anchor_bank_losses(
-                    evidence['support_features'].to(device),evidence['support_labels'].to(device),
-                    evidence[self.feature_key].to(device),evidence[self.label_key].to(device),
+                    prepared['support_features'],prepared['support_labels'],
+                    prepared['query_features'],prepared['query_labels'],
                     client.model.shared_projector,client.model.shared_head,{'bank':bank},
                     client.utility_inner_lr,client.lamda,client.mcl,evidence['mcl_gap'],
                     **({'mcl_gap_class_cap':True} if evidence.get('mcl_gap_class_cap',False) else {}),
-                    **candidate_next_gap_kwargs(client,evidence))
+                    **candidate_next_gap_kwargs(client,evidence), _prepared=prepared,
+                    _bank_geometry=geometry)
                 losses.append(result['bank'].detach())
             self.cache[key]=losses
             self.bank_evaluations+=1
@@ -63,18 +82,46 @@ class CachedRAARQueries:
                 'uses_test_data':False,'model_parameters_changed':False}
         trial_losses=self._losses(trial)
         reference_losses=self._losses(reference)
-        pairs=[]
-        precision_floor=0.
+        # Reduce each client on its original device/dtype, then transfer all
+        # scalar statistics once per CUDA device. Python cohort aggregation below
+        # retains its original client order and floating-point arithmetic.
+        statistics=[]
+        transfers={}
         for client,left,right in zip(self.clients,trial_losses,reference_losses):
             gain=right.double()-left.double()
             n=gain.numel()
-            if n<2 or not torch.isfinite(gain).all():
+            if n<2:
                 return {'observed_clients':0,'mean_gain':None,'standard_error':None,
                         'reason':'Too few finite paired queries'}
-            pairs.append({'client':int(client.id),'n':n,'mean':float(gain.mean()),
-                          'variance_of_mean':float(gain.var(unbiased=True)/n)})
-            scale=max(1.,float(left.abs().mean()),float(right.abs().mean()))
-            precision_floor=max(precision_floor,4*torch.finfo(left.dtype).eps*scale)
+            finite=torch.isfinite(gain).all()
+            if gain.device.type=='cpu' and not bool(finite):
+                return {'observed_clients':0,'mean_gain':None,'standard_error':None,
+                        'reason':'Too few finite paired queries'}
+            values=(gain.mean(),gain.var(unbiased=True)/n,left.abs().mean(),right.abs().mean())
+            index=len(statistics)
+            if gain.device.type=='cpu':
+                scalars=[1.,*(float(value) for value in values)]
+            else:
+                scalars=None
+                packed=torch.stack((finite.double(),*(value.double() for value in values)))
+                transfers.setdefault(gain.device,[]).append((index,packed))
+            statistics.append((int(client.id),n,torch.finfo(left.dtype).eps,scalars))
+        for entries in transfers.values():
+            values=torch.stack([packed for _,packed in entries]).cpu().tolist()
+            for (index,_),scalars in zip(entries,values):
+                client_id,n,epsilon,_=statistics[index]
+                statistics[index]=(client_id,n,epsilon,scalars)
+        pairs=[]
+        precision_floor=0.
+        for client_id,n,epsilon,values in statistics:
+            finite,mean_gain,variance,left_scale,right_scale=values
+            if not finite:
+                return {'observed_clients':0,'mean_gain':None,'standard_error':None,
+                        'reason':'Too few finite paired queries'}
+            pairs.append({'client':client_id,'n':n,'mean':mean_gain,
+                          'variance_of_mean':variance})
+            scale=max(1.,left_scale,right_scale)
+            precision_floor=max(precision_floor,4*epsilon*scale)
         total=sum(row['n'] for row in pairs)
         shares=[row['n']/total for row in pairs]
         mean=sum(share*row['mean'] for share,row in zip(shares,pairs))

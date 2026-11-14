@@ -22,46 +22,72 @@ def same_budget_anchor_banks(current,candidate,applied,adaptive_weights,observed
     return banks,budgets
 
 
+def prepare_anchor_bank_probe(support_features, support_labels, query_features,
+                              query_labels, projector, head):
+    """Snapshot fixed inputs/leaf parameters for one cached round's bank family.
+
+    No support graph is retained. Every bank still builds its own forward and
+    backward graph; parameter leaves are read-only and autograd.grad does not
+    accumulate into their .grad fields.
+    """
+    if not isinstance(projector,torch.nn.Linear) or not isinstance(head,torch.nn.Linear):
+        raise ValueError('The candidate probe requires linear projector and classifier')
+    if projector.bias is None:
+        raise ValueError('The candidate probe requires a biased projector')
+    device=projector.weight.device
+    params=[projector.weight.detach().float().clone().requires_grad_(True),
+            projector.bias.detach().float().clone().requires_grad_(True),
+            head.weight.detach().float().clone().requires_grad_(True)]
+    if head.bias is not None:
+        params.append(head.bias.detach().float().clone().requires_grad_(True))
+    return dict(params=params,
+        support_features=support_features.detach().to(device).float(),
+        support_labels=support_labels.to(device),
+        query_features=query_features.detach().to(device).float(),
+        query_labels=query_labels.to(device))
+
+
 def one_step_anchor_bank_losses(support_features, support_labels, query_features, query_labels,
                                 projector, head, anchor_banks, inner_lr, mse_weight,
                                 mcl_weight, mcl_gap, mcl_gap_class_cap=False,
-                                next_gap_context=None):
+                                next_gap_context=None, _prepared=None, _bank_geometry=None):
     """Change only the anchor bank, then evaluate a virtual update on the same query.
 
     Parameter clones are independent leaves: neither parameters nor .grad fields
     on the trained model are modified. Agreement is intentionally absent and the
     MCL gap is held fixed across alternatives.
     """
-    if not isinstance(projector,torch.nn.Linear) or not isinstance(head,torch.nn.Linear):
-        raise ValueError('The candidate probe requires linear projector and classifier')
-    if projector.bias is None:
-        raise ValueError('The candidate probe requires a biased projector')
+    prepared=(_prepared if _prepared is not None else prepare_anchor_bank_probe(
+        support_features,support_labels,query_features,query_labels,projector,head))
+    params=prepared['params']
+    support_features=prepared['support_features'];support_labels=prepared['support_labels']
+    query_features=prepared['query_features'];query_labels=prepared['query_labels']
     losses={}
     for name,bank in anchor_banks.items():
         with torch.enable_grad():
-            params=[projector.weight.detach().float().clone().requires_grad_(True),
-                    projector.bias.detach().float().clone().requires_grad_(True),
-                    head.weight.detach().float().clone().requires_grad_(True)]
-            if head.bias is not None:
-                params.append(head.bias.detach().float().clone().requires_grad_(True))
-            projected=F.linear(support_features.detach().float(),params[0],params[1])
+            projected=F.linear(support_features,params[0],params[1])
             logits=F.linear(projected,params[2],params[3] if len(params)>3 else None)
             bank=bank.detach().to(device=projected.device,dtype=torch.float32)
             gap=mcl_gap
             if next_gap_context is not None:
-                from utils.raar_next_gap import resolve_next_gap
-                gap=resolve_next_gap(bank,mcl_gap,next_gap_context)
+                if _bank_geometry is None:
+                    from utils.raar_next_gap import resolve_next_gap
+                    gap=resolve_next_gap(bank,mcl_gap,next_gap_context)
+                else:
+                    gap=_bank_geometry.next_gap(mcl_gap,next_gap_context)
             objective=F.cross_entropy(logits,support_labels)
             if mse_weight:
                 objective=objective+float(mse_weight)*F.mse_loss(projected,bank[support_labels])
             if mcl_weight:
                 distances=torch.cdist(projected,bank,p=2)
-                distances=add_mcl_gap(distances,support_labels,bank,gap,mcl_gap_class_cap)
+                distances=(add_mcl_gap(distances,support_labels,bank,gap,mcl_gap_class_cap)
+                    if _bank_geometry is None else
+                    _bank_geometry.add_gap(distances,support_labels,gap,mcl_gap_class_cap))
                 objective=objective+float(mcl_weight)*F.cross_entropy(-distances,support_labels)
             gradients=torch.autograd.grad(objective,params)
             adapted=[(value-float(inner_lr)*gradient).detach() for value,gradient in zip(params,gradients)]
         with torch.no_grad():
-            query_projected=F.linear(query_features.detach().float(),adapted[0],adapted[1])
+            query_projected=F.linear(query_features,adapted[0],adapted[1])
             query_logits=F.linear(query_projected,adapted[2],adapted[3] if len(adapted)>3 else None)
             per_sample=F.cross_entropy(query_logits,query_labels,reduction='none')
             if not torch.isfinite(per_sample).all():
