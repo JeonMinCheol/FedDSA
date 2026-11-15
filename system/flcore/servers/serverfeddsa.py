@@ -19,7 +19,6 @@ from utils.raar_refinement_probe import CachedRAARQueries
 from utils.candidate_noise_statistics import cohort_candidate_confidence
 from utils.raar_next_gap import candidate_next_gap_kwargs
 from utils.uniform_raar_update import apply_uniform_raar
-from utils.cau_raw_gate import raw_cau_payload, update_raw_gate_statistics
 
 
 class FedDSA(Server):
@@ -118,33 +117,10 @@ class FedDSA(Server):
         self.scalar_reliability_state = bool(
             getattr(args, "scalar_reliability_state", False)
         )
-        self.prototype_utility = bool(
-            getattr(args, "prototype_utility", False)
-        )
-        self.utility_ema = min(
-            max(float(getattr(args, "utility_ema", 0.25)), 0.0), 1.0
-        )
-        self.utility_temperature = max(
-            float(getattr(args, "utility_temperature", 0.1)), 1e-6
-        )
-        self.utility_min_weight = min(
-            max(float(getattr(args, "utility_min_weight", 0.25)), 0.0), 1.0
-        )
-        self.utility_max_weight = max(
-            float(getattr(args, "utility_max_weight", 1.5)),
-            self.utility_min_weight,
-        )
-        self.utility_local_gate = bool(getattr(args, "utility_local_gate", True))
-        self.cau_gate_policy = args.cau_gate_policy
-        self.cau_gate_tau = args.cau_gate_tau
-        self.utility_signal_mode = str(
-            getattr(args, "utility_signal_mode", "observed")
-        ).lower()
-        if self.utility_signal_mode not in {"observed", "shuffled", "uniform", "zscore"}:
-            self.utility_signal_mode = "observed"
-        self.utility_positive_only = bool(
-            getattr(args, "utility_positive_only", False)
-        )
+        self.raar_evidence_enabled = self.raar_enabled
+        self.local_marginal_cau = bool(getattr(args, "local_marginal_cau", False))
+        self.raar_evidence_ema = float(getattr(args, "raar_evidence_ema", 0.25))
+        self.raar_evidence_assignment = str(getattr(args, "raar_evidence_assignment", "observed"))
         self.reliability_state_alpha = min(
             max(float(getattr(args, "reliability_state_alpha", 0.25)), 0.0), 1.0
         )
@@ -290,12 +266,6 @@ class FedDSA(Server):
             self.class_reliability = torch.ones(
                 self.num_classes, dtype=torch.float32, device=self.device
             )
-            self.class_utility = torch.zeros(
-                self.num_classes, dtype=torch.float32, device=self.device
-            )
-            self.class_utility_count = torch.zeros(
-                self.num_classes, dtype=torch.float32, device=self.device
-            )
             self.class_boundary_margin = torch.full(
                 (self.num_classes,),
                 min(
@@ -340,8 +310,7 @@ class FedDSA(Server):
             f"memory_slots={self.memory_max_per_class} "
             f"new_anchor_mode={self.new_anchor_mode}"
         )
-        if self.prototype_utility:
-            print(f"utility_control=local_only anchor_candidate_mix={self.anchor_candidate_mix}")
+        print(f"local_cau={self.local_marginal_cau} raar_evidence={self.raar_evidence_enabled}")
         print(f"raar=NextGap_uniform_mean_matched enabled={self.raar_enabled} prototype_aggregation=class_sample_count "
               f"gamma={self.anchor_candidate_mix} reference_momentum={self.anchor_momentum}")
         print("=" * 50)
@@ -441,7 +410,7 @@ class FedDSA(Server):
                 self.evaluate()
 
             gate_client = None
-            if self.prototype_utility and self.utility_local_gate:
+            if self.local_marginal_cau:
                 gate_client = next(
                     (
                         client for client in self.selected_clients
@@ -506,7 +475,7 @@ class FedDSA(Server):
                     anchor_step_norms.mean().item()
                 )
             self.send_semantic_state()
-            if self.prototype_utility or self.raar_enabled:
+            if self.local_marginal_cau or self.raar_evidence_enabled:
                 self.write_utility_gate_diagnostics(round_idx, gate_client, anchor_step_norms)
             if gate_client is not None:
                 gate_client.capture_utility_gate = False
@@ -640,84 +609,32 @@ class FedDSA(Server):
             self.previous_utility_gate_vectors[name] = (int(round_idx), arr)
             return result
 
-        def clipping(values):
-            if values is None:
-                return None
-            finite = np.asarray([value for value in values if value is not None])
-            if not finite.size:
-                return None
-            return {
-                "count": int(finite.size),
-                "below_min": int(np.count_nonzero(finite < self.utility_min_weight)),
-                "above_max": int(np.count_nonzero(finite > self.utility_max_weight)),
-            }
-
         captured = getattr(gate_client, "last_local_utility_gate", None)
         local = {key: vector(value) for key, value in captured.items()} if captured else {}
-        local_weights = local.get("weight")
-        normalize = bool(getattr(self.args, "utility_weight_normalize", True))
-        local_neutral = self.utility_min_weight if self.utility_positive_only and not normalize else 1.0
-        local_summary = summary(local_weights, "local", local_neutral)
         observation_count = vector(self.last_utility_observation_count)
         probe_query_count = vector(self.utility_validation_query_count)
         probe_gain_count = vector(self.utility_validation_gain_count)
         probe_gain = masked(vector(self.utility_validation_gain_value), probe_gain_count)
-
-        def gate_by_gain(values):
-            if values is None or probe_gain is None or probe_query_count is None:
-                return None
-            pairs = [
-                (weight, gain)
-                for weight, gain, count in zip(values, probe_gain, probe_query_count)
-                if weight is not None and gain is not None and count is not None and count > 0
-            ]
-            if not pairs:
-                return None
-            negative = [weight for weight, gain in pairs if gain < 0]
-            nonnegative = [weight for weight, gain in pairs if gain >= 0]
-            negative_mean = float(np.mean(negative)) if negative else None
-            nonnegative_mean = float(np.mean(nonnegative)) if nonnegative else None
-            return {
-                "negative_gain_classes": len(negative),
-                "nonnegative_gain_classes": len(nonnegative),
-                "negative_gain_mean_gate": negative_mean,
-                "nonnegative_gain_mean_gate": nonnegative_mean,
-                "nonnegative_minus_negative": (
-                    nonnegative_mean - negative_mean
-                    if nonnegative_mean is not None and negative_mean is not None else None
-                ),
-            }
-
         record = {
             "round": int(round_idx), "seed": int(self.random_seed),
             "goal": str(getattr(self.args, "goal", "")),
             "class_index": "arrays are indexed by class label; null means unavailable",
-            "timing": "local uses the broadcast state; utility and probe follow this round's aggregation",
+            "timing": "private local CAU precedes SGD; server-only RAAR evidence follows aggregation",
             "anchor_candidate_mix": float(self.anchor_candidate_mix),
-            "temperature": float(self.utility_temperature),
-            "signal_mode": str(self.utility_signal_mode),
-            "utility_ema": float(self.utility_ema),
-            "positive_only": bool(self.utility_positive_only),
+            "signal_mode": str(self.raar_evidence_assignment),
+            "utility_ema": float(self.raar_evidence_ema),
             "local": {
-                "gate_policy": self.cau_gate_policy,
-                "raw_gate_tau": self.cau_gate_tau if self.cau_gate_policy != "legacy" else None,
-                "enabled": bool(self.utility_local_gate),
+                "gate_policy": "local_marginal" if self.local_marginal_cau else "off",
+                "local_marginal_gap": bool(getattr(self.args, "local_marginal_gap", True)),
+                "enabled": self.local_marginal_cau,
                 "captured_client": int(gate_client.id) if captured else None,
-                "normalize": normalize,
-                "min_weight": float(self.utility_min_weight),
-                "max_weight": float(self.utility_max_weight),
-                **local, "summary": local_summary,
-                "first_clipping": clipping(local.get("before_clip")),
-                "normalization_clipping": clipping(local.get("normalized_before_clip")),
+                "min_weight": .75, "max_weight": 1.25, "normalize": False,
+                **local, "summary": summary(local.get("weight"), "local", 1.),
             },
-            "utility": {
+            "raar_evidence": {
                 "query_count": observation_count,
                 "raw_observed": masked(vector(self.last_utility_observed), observation_count),
-                "signal_after_transform": masked(vector(self.last_utility_signal), observation_count),
-                "ema_after_update": vector(self.class_utility),
-                "raw_ema_after_update": vector(getattr(self, "raw_class_utility", None)),
-                "raw_gate_noise_ema": vector(getattr(self, "raw_gate_noise_ema", None)),
-                "raw_gate_effective_clients": vector(getattr(self, "raw_gate_effective_clients", None)),
+                "raw_ema_after_update": vector(getattr(self, "raar_utility_ema", None)),
                 "contributing_clients": vector(self.last_utility_client_count),
                 "client_sample_weighted_std": masked(vector(self.last_utility_client_std), observation_count),
                 "positive_clients": vector(self.last_utility_positive_clients),
@@ -733,7 +650,6 @@ class FedDSA(Server):
                 "paired_validation_count": probe_gain_count,
                 "query_utility": masked(vector(self.utility_validation_query_value), probe_query_count),
                 "validation_gain": probe_gain,
-                "local_weight_by_gain": gate_by_gain(local_weights),
             },
             "anchor_step_norm": vector(anchor_step_norms),
         }
@@ -811,24 +727,15 @@ class FedDSA(Server):
                 if self.proto_reliability
                 else 1.0,
             },
-            "prototype_utility": {
-                "enabled": bool(self.prototype_utility),
-                "local_gate": bool(self.utility_local_gate),
-                "anchor_candidate_mix": float(self.anchor_candidate_mix),
-                "weight_normalize": bool(
-                    getattr(self.args, "utility_weight_normalize", True)
-                ),
-                "signal_mode": str(self.utility_signal_mode),
-                "temperature": float(self.utility_temperature),
-                "ema": float(self.utility_ema),
-                "mean": float(self.class_utility.mean().item())
-                if self.prototype_utility
-                else 0.0,
-                "positive_rate": float(
-                    (self.class_utility > 0).float().mean().item()
-                )
-                if self.prototype_utility
-                else 0.0,
+            "local_cau": {
+                "enabled": self.local_marginal_cau,
+                "gap_in_signal": bool(getattr(self.args, "local_marginal_gap", True)),
+                "server_gate_broadcast": False, "weight_bounds": [.75, 1.25],
+            },
+            "raar_evidence": {
+                "enabled": self.raar_evidence_enabled,
+                "ema": self.raar_evidence_ema, "assignment": self.raar_evidence_assignment,
+                "used_for_local_weights": False,
             },
             "utility_validation": {
                 "enabled": bool(self.utility_validation_probe),
@@ -1053,10 +960,6 @@ class FedDSA(Server):
         
     def send_semantic_state(self, clients=None):
         clients = self.clients if clients is None else clients
-        raw_payload = None
-        if (self.prototype_utility and self.utility_local_gate
-                and self.cau_gate_policy != "legacy"):
-            raw_payload = raw_cau_payload(self, self.cau_gate_policy, self.cau_gate_tau)
         anchors = self.semantic_anchors.detach()
         class_boundary_mode = self.new_anchor_mode == "class_boundary"
         role_mode = self.new_anchor_mode in {
@@ -1109,12 +1012,6 @@ class FedDSA(Server):
                 client.set_class_reliability(
                     self.class_reliability if self.scalar_reliability_state else None
                 )
-            if hasattr(client, "set_class_utility"):
-                client.set_class_utility(
-                    self.class_utility if self.prototype_utility else None
-                )
-            if hasattr(client, "set_raw_cau_gate"):
-                client.set_raw_cau_gate(raw_payload)
             if hasattr(client, "set_class_boundary_margin"):
                 client.set_class_boundary_margin(
                     self.class_boundary_margin
@@ -1130,13 +1027,9 @@ class FedDSA(Server):
             )
 
     def receive_protos(self):
-        if (self.prototype_utility and self.utility_local_gate
-                and self.cau_gate_policy != "legacy"):
-            self.raw_gate_effective_clients = torch.zeros(self.num_classes, device=self.device)
-        if hasattr(self, "raw_class_utility_count"):
-            self.raw_class_utility_count.zero_()
+        if hasattr(self, "raar_utility_count"):
+            self.raar_utility_count.zero_()
         self.last_utility_observed = None
-        self.last_utility_signal = None
         self.last_utility_observation_count = None
         self.last_utility_client_count = None
         self.last_utility_client_std = None
@@ -1207,8 +1100,8 @@ class FedDSA(Server):
                     validation_gain_counts.append(count.clamp_min(0.0))
                     client_validation_gain = gain
                     client_validation_count = count.clamp_min(0.0)
-            utility = getattr(client, "anchor_utility", None)
-            utility_count = getattr(client, "anchor_utility_count", None)
+            utility = getattr(client, "raar_utility", None)
+            utility_count = getattr(client, "raar_utility_count", None)
             if utility is not None and utility_count is not None:
                 utility = torch.as_tensor(utility, dtype=torch.float32).detach().cpu()
                 utility_count = torch.as_tensor(
@@ -1330,7 +1223,7 @@ class FedDSA(Server):
             self.require_finite_upload(utility_sum, "weighted_utility_sum")
             self.require_finite_upload(utility_count_sum, "utility_count_sum")
             observed = utility_sum / utility_count_sum.clamp_min(1.0)
-            self.update_raw_utility(observed, utility_count_sum)
+            self.update_raar_utility(observed, utility_count_sum)
             valid = utility_count_sum > 0
             self.last_utility_observed = observed.detach().clone()
             self.last_utility_observation_count = utility_count_sum.detach().clone()
@@ -1343,43 +1236,10 @@ class FedDSA(Server):
                 (difference.square() * client_counts).sum(dim=0)
                 / utility_count_sum.clamp_min(1.0)
             ).clamp_min(0.0).sqrt()
-            if (self.prototype_utility and self.utility_local_gate
-                    and self.cau_gate_policy != "legacy"):
-                update_raw_gate_statistics(
-                    self, utility_count_sum, client_counts, self.last_utility_client_std)
             self.last_utility_positive_clients = (client_valid & (client_values > 0)).sum(dim=0)
             self.last_utility_negative_clients = (client_valid & (client_values < 0)).sum(dim=0)
-            if self.prototype_utility and bool(valid.any()):
-                values = observed[valid]
-                if self.utility_signal_mode == "shuffled":
-                    observed = observed.clone()
-                    observed[valid] = values[torch.randperm(values.numel())]
-                elif self.utility_signal_mode == "uniform":
-                    observed = observed.clone()
-                    observed[valid] = values.mean()
-                elif self.utility_signal_mode == "zscore":
-                    observed = observed.clone()
-                    scale = values.std(unbiased=False).clamp_min(1e-6)
-                    observed[valid] = (values - values.mean()) / scale
-            self.last_utility_signal = observed.detach().clone()
-            if self.prototype_utility:
-                self.require_finite_upload(observed, "transformed_utility")
-                valid_device = valid.to(self.device)
-                observed_device = observed.to(self.device)
-                self.class_utility[valid_device] = (
-                    self.class_utility[valid_device] * (1.0 - self.utility_ema)
-                    + observed_device[valid_device] * self.utility_ema
-                )
-            self.class_utility_count = utility_count_sum.to(self.device)
-            self.new_anchor_metrics["utility_mean"] = float(
-                observed[valid].mean().item()
-            ) if bool(valid.any()) else 0.0
-            self.new_anchor_metrics["utility_positive_rate"] = float(
-                (observed[valid] > 0).float().mean().item()
-            ) if bool(valid.any()) else 0.0
-        elif self.prototype_utility:
-            self.new_anchor_metrics["utility_mean"] = 0.0
-            self.new_anchor_metrics["utility_positive_rate"] = 0.0
+            self.new_anchor_metrics["utility_mean"] = float(observed[valid].mean()) if bool(valid.any()) else 0.0
+            self.new_anchor_metrics["utility_positive_rate"] = float((observed[valid]>0).float().mean()) if bool(valid.any()) else 0.0
         self.global_protos = self.aggregate_protos(uploaded)
         save_item(self.global_protos, self.role, "global_protos", self.save_folder_name)
 
@@ -1944,7 +1804,7 @@ class FedDSA(Server):
         estimates = [cohort_candidate_confidence(
             scores[:, point], masks[:, point], variances[:, point],
             torch.tensor(weights, device=stable.device), self.num_clients,
-            previous_state=previous[point], ema=self.utility_ema) for point in range(3)]
+            previous_state=previous[point], ema=self.raar_evidence_ema) for point in range(3)]
         self.candidate_noise_state = [value["state"] for value in estimates]
         proposal = propose_marginal_raar_beta(prior_beta, estimates, self.candidate_trust_max_weight)
         self.candidate_gain_stats = {
@@ -2072,7 +1932,7 @@ class FedDSA(Server):
 
         if torch.any(has_stats):
             support_trust = support / (support + 1.0)
-            harm = self.negative_raw_utility(signal)
+            harm = self.negative_raar_utility(signal)
             uncertainty = noise + self.utility_trust_penalty * signal * harm
             confidence = signal / (signal + uncertainty + 1e-12) * support_trust
             beta[has_stats] = confidence.clamp(0, 1)[has_stats]
@@ -2080,35 +1940,35 @@ class FedDSA(Server):
 
 
     @torch.no_grad()
-    def update_raw_utility(self, observed, count):
-        """Keep a separate EMA in loss units, before any z-score or shuffle."""
-        if not self.prototype_utility and not self.raar_enabled:
+    def update_raar_utility(self, observed, count):
+        """Update server-only RAAR evidence in raw loss units, never local weights."""
+        if not self.raar_evidence_enabled:
             return
         self.require_finite_upload(observed, "raw_utility")
         self.require_finite_upload(count, "raw_utility_count")
-        if not hasattr(self, "raw_class_utility"):
-            self.raw_class_utility = torch.zeros(self.num_classes, device=self.device)
+        if not hasattr(self, "raar_utility_ema"):
+            self.raar_utility_ema = torch.zeros(self.num_classes, device=self.device)
         observed = observed.detach().to(device=self.device, dtype=torch.float32)
         count = count.detach().to(device=self.device, dtype=torch.float32)
         valid = count > 0
-        self.raw_class_utility[valid] = (
-            self.raw_class_utility[valid] * (1 - self.utility_ema)
-            + observed[valid] * self.utility_ema
+        self.raar_utility_ema[valid] = (
+            self.raar_utility_ema[valid] * (1 - self.raar_evidence_ema)
+            + observed[valid] * self.raar_evidence_ema
         )
-        self.raw_class_utility_count = count.clone()
-        if not hasattr(self, "raw_class_utility_total_count"):
-            self.raw_class_utility_total_count = torch.zeros_like(count)
-        self.raw_class_utility_total_count += count
+        self.raar_utility_count = count.clone()
+        if not hasattr(self, "raar_utility_total_count"):
+            self.raar_utility_total_count = torch.zeros_like(count)
+        self.raar_utility_total_count += count
 
 
     @torch.no_grad()
-    def utility_for_update(self):
+    def raar_utility_for_update(self):
         """Change score-to-class assignment without changing score estimation or training RNG."""
-        raw = self.raw_class_utility
-        count = self.raw_class_utility_count
+        raw = self.raar_utility_ema
+        count = self.raar_utility_count
         applied = raw.detach().clone()
         valid = torch.nonzero(count > 0, as_tuple=False).view(-1)
-        mode = getattr(self, "utility_signal_mode", "observed")
+        mode = getattr(self, "raar_evidence_assignment", "observed")
         if mode == "shuffled" and valid.numel() > 1:
             generator = torch.Generator(device='cpu')
             generator.manual_seed((0x5A17 + 1000003 * int(self.random_seed) + int(self.current_round)) % (2 ** 63 - 1))
@@ -2127,16 +1987,16 @@ class FedDSA(Server):
 
 
     @torch.no_grad()
-    def negative_raw_utility(self, reference):
+    def negative_raar_utility(self, reference):
         """Task-harm evidence in the same round; missing observations are neutral."""
         harm = torch.zeros_like(reference)
-        raw = getattr(self, "raw_class_utility", None)
-        count = getattr(self, "raw_class_utility_count", None)
+        raw = getattr(self, "raar_utility_ema", None)
+        count = getattr(self, "raar_utility_count", None)
         if raw is None or count is None:
             return harm
         self.require_finite_upload(raw, "raw_utility_ema")
         self.require_finite_upload(count, "raw_utility_count")
-        raw = self.utility_for_update().to(device=reference.device, dtype=reference.dtype)
+        raw = self.raar_utility_for_update().to(device=reference.device, dtype=reference.dtype)
         valid = count.to(reference.device) > 0
         harm[valid] = (-torch.tanh(raw[valid] / self.utility_trust_temperature)).clamp_min(0)
         return harm

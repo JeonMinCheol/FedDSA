@@ -7,27 +7,12 @@ import torch.nn.functional as F
 
 
 def configure_utility_module(args):
-    """Configure the adopted RAAR without changing the local CAU/PCW switches."""
-    policy = getattr(args, "cau_gate_policy", "legacy")
-    if policy not in {"legacy", "raw", "raw_shuffled"}:
-        raise ValueError("CAU gate policy must be legacy, raw, or raw_shuffled")
-    tau = getattr(args, "cau_gate_tau", None)
-    if tau is None:
-        tau = float(getattr(args, "utility_temperature", 0.1))
-        if policy == "legacy":
-            tau = max(tau, 1e-6)  # Match the existing legacy client clamp.
-    tau = float(tau)
-    if not math.isfinite(tau) or tau <= 0:
-        raise ValueError("cau_gate_tau must be finite and positive")
-    args.cau_gate_policy = policy
-    args.cau_gate_tau = tau
-    if policy != "legacy":
-        # The improved policy is a complete gate, not an input to the old
-        # positive-only, clipping, or mean-normalization policy.
-        args.utility_positive_only = False
-        args.utility_weight_normalize = False
-        args.utility_min_weight = 0.75
-        args.utility_max_weight = 1.25
+    """Configure RAAR and any explicitly selected local CAU policy."""
+    if bool(getattr(args, "local_marginal_cau", False)):
+        if (getattr(args, "new_anchor_mode", "none") != "none"
+                or any(bool(getattr(args, key, False)) for key in (
+                    "dual_disagreement_gate", "scalar_reliability_state", "use_amp"))):
+            raise ValueError("Local marginal CAU requires ordinary single anchors and full precision")
     gamma = getattr(args, "anchor_candidate_mix", None)
     legacy_gamma = getattr(args, "moving_anchor_ema", None)
     if gamma is not None and legacy_gamma is not None and gamma != legacy_gamma:
@@ -76,7 +61,7 @@ def validate_candidate_next_gap(args):
         raise ValueError("NextGap RAAR requires distance-softmax MCL")
     if getattr(args, "mcl_gap_mode", "min") not in {"min", "max"}:
         raise ValueError("MCL gap mode must be min or max")
-    ema = float(getattr(args, "utility_ema", 0.25))
+    ema = float(getattr(args, "raar_evidence_ema", 0.25))
     if not math.isfinite(ema) or not 0 < ema <= 1:
         raise ValueError("RAAR evidence EMA must be in (0,1]")
     return args

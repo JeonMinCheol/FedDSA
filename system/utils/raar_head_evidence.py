@@ -1,4 +1,4 @@
-"""Frozen-backbone utility: training MCL gap ON, virtual agreement OFF."""
+"""Server-only RAAR loss-gain evidence: MCL gap ON, local CAU/PCW OFF."""
 import copy
 
 import torch
@@ -13,9 +13,9 @@ def class_means(values, labels, num_classes):
     return (sums / counts.clamp_min(1)).cpu(), counts.cpu()
 
 
-def supervision_loss(client, model, features, labels, logits, deployed=False):
+def supervision_loss(client, model, features, labels, logits):
     branch = copy.copy(client)
-    branch.utility_local_gate = bool(deployed and client.utility_local_gate)
+    branch.local_marginal_cau = False
     branch.capture_utility_gate = False
     return branch.anchor_loss(features, labels, logits.detach())[0]
 

@@ -1,3 +1,7 @@
+import json
+import os
+import random
+from utils.local_marginal_cau import local_marginal_gate, evaluate_gate
 import time
 import hashlib
 from collections import defaultdict
@@ -71,32 +75,11 @@ class clientfeddsa(Client):
             getattr(args, "scalar_reliability_state", False)
         )
         self.class_reliability = None
-        self.prototype_utility = bool(
-            getattr(args, "prototype_utility", False)
-        )
-        self.utility_inner_lr = max(
-            float(getattr(args, "utility_inner_lr", 0.01)), 0.0
-        )
-        self.utility_temperature = max(
-            float(getattr(args, "utility_temperature", 0.1)), 1e-6
-        )
-        self.utility_min_weight = min(
-            max(float(getattr(args, "utility_min_weight", 0.25)), 0.0), 1.0
-        )
-        self.utility_max_weight = max(
-            float(getattr(args, "utility_max_weight", 1.5)),
-            self.utility_min_weight,
-        )
-        self.utility_local_gate = bool(getattr(args, "utility_local_gate", True))
-        self.utility_weight_normalize = bool(
-            getattr(args, "utility_weight_normalize", True)
-        )
-        self.utility_positive_only = bool(
-            getattr(args, "utility_positive_only", False)
-        )
-        self.class_utility = None
-        self.cau_gate_policy = args.cau_gate_policy
-        self.raw_cau_gate_payload = None
+        self.utility_inner_lr = max(float(getattr(args, "utility_inner_lr", 0.01)), 0.0)
+        self.local_marginal_cau = bool(getattr(args, "local_marginal_cau", False))
+        self.local_marginal_gap = bool(getattr(args, "local_marginal_gap", True))
+        self.local_cau_state = None
+        self.local_cau_round = None
         self.latest_utility_metrics = {}
         self.capture_utility_gate = False
         self.last_local_utility_gate = None
@@ -194,13 +177,6 @@ class clientfeddsa(Client):
             reliability, device=self.device, dtype=torch.float32
         ).detach().clone()
 
-    def set_class_utility(self, utility):
-        if utility is None:
-            self.class_utility = None
-            return
-        self.class_utility = torch.as_tensor(
-            utility, device=self.device, dtype=torch.float32
-        ).detach().clone()
 
     def set_class_boundary_margin(self, margin):
         if margin is None:
@@ -210,10 +186,6 @@ class clientfeddsa(Client):
             margin, device=self.device, dtype=torch.float32
         ).detach().clone()
 
-    def set_raw_cau_gate(self, payload):
-        self.raw_cau_gate_payload = {
-            key: value.to(self.device).detach().clone() for key, value in payload.items()
-        } if payload is not None else None
 
     def forward_rep_logits(self, model, x):
         rep = model.shared_representation(x)
@@ -250,17 +222,15 @@ class clientfeddsa(Client):
             return self.stable_semantic_anchors
         return self.semantic_anchors
 
-    def compute_anchor_utility(self, model):
-        """Keep CAU's two batches; cache a third for RAAR's separate decision."""
-        from utils.head_counterfactual_utility import head_gains
-        self.anchor_utility = self.anchor_utility_count = None
+    def compute_raar_evidence(self, model):
+        """Collect server-only RAAR evidence; never return local training weights."""
+        from utils.raar_head_evidence import head_gains
+        self.raar_utility = self.raar_utility_count = None
         self.validation_anchor_gain = self.validation_anchor_gain_count = None
         self.anchor_candidate_evidence = None
         self.latest_utility_metrics = {}
         candidate = bool(getattr(self, "candidate_gain_enabled", False))
-        if not candidate and getattr(self, "current_round", 0) % getattr(self, "utility_interval_rounds", 1):
-            return None
-        if (not self.prototype_utility and not candidate) or self.semantic_anchors is None:
+        if not candidate or self.semantic_anchors is None:
             return None
         third_batch = self.utility_validation_probe or candidate
         needed = 3 if third_batch else 2
@@ -275,15 +245,15 @@ class clientfeddsa(Client):
         result = head_gains(self, model, batches[0], batches[1],
                             batches[2] if third_batch else None,
                             batches[3] if diagnostic and len(batches) > 3 else None)
-        self.anchor_utility, self.anchor_utility_count = result[0]
+        self.raar_utility, self.raar_utility_count = result[0]
         if self.utility_validation_probe:
             self.validation_anchor_gain, self.validation_anchor_gain_count = result[1]
-        valid = self.anchor_utility_count > 0
+        valid = self.raar_utility_count > 0
         self.latest_utility_metrics = {
-            "utility_mean": float(self.anchor_utility[valid].mean()) if valid.any() else 0.,
-            "utility_positive_rate": float((self.anchor_utility[valid] > 0).float().mean()) if valid.any() else 0.,
+            "utility_mean": float(self.raar_utility[valid].mean()) if valid.any() else 0.,
+            "utility_positive_rate": float((self.raar_utility[valid] > 0).float().mean()) if valid.any() else 0.,
         }
-        return self.anchor_utility
+        return self.raar_utility
 
     @torch.no_grad()
     def protos_from_sums(self, proto_sum, proto_count):
@@ -559,6 +529,8 @@ class clientfeddsa(Client):
             local_epochs = int(self.rng.randint(1, max(2, local_epochs // 2 + 1)))
 
         try:
+            if getattr(self, "local_marginal_cau", False):
+                self.prepare_local_marginal_gate(model)
             for epoch in range(local_epochs):
                 for x, y in self.load_train_data(drop_last=True, phase=f"train/{epoch}"):
                     x, y = self.move_input(x, y)
@@ -601,8 +573,8 @@ class clientfeddsa(Client):
                         metric_batches += 1
 
             self.collect_protos(model=model)
-            if self.prototype_utility or getattr(self, "candidate_gain_enabled", False):
-                utility = self.probe_anchor_utility(model)
+            if getattr(self, "candidate_gain_enabled", False):
+                utility = self.probe_raar_evidence(model)
             if self.meta_enabled:
                 meta_grad = self.compute_meta_anchor_gradient(model)
                 if meta_grad is not None:
@@ -628,14 +600,84 @@ class clientfeddsa(Client):
         self.train_time_cost["num_rounds"] += 1
         self.train_time_cost["total_cost"] += time.time() - start_time
 
-    def probe_anchor_utility(self, model):
-        """Keep CAU sampling from advancing subsequent training/prototype RNG."""
+    def prepare_local_marginal_gate(self,model):
+        started=time.perf_counter()
+        ones=torch.ones(self.num_classes,device=self.device)
+        zeros=torch.zeros_like(ones)
+        # Reset every participation, including after missing batches or a long absence.
+        self.local_cau_round=int(self.current_round)
+        self.local_cau_state={'weight':ones,'score':zeros,'cosine':zeros.clone(),
+            'observed':zeros.bool(),'support_count':zeros.long()}
+        record={'round':int(self.current_round),'client':int(self.id),'seed':int(self.random_seed),
+            'signal':'current_source_class_marginal_query_CE_benefit_at_weight1',
+            'mapping':'1+0.25*cos(query_projector_gradient,source_class_anchor_gradient)',
+            'gap_in_signal':bool(self.local_marginal_gap),'actual_local_gap_included':True,
+            'local_ema':False,'global_gate_used':False,'computed_before_SGD':True,
+            'backbone_frozen_in_probe':True,'PCW_in_virtual_anchor_loss':True,
+            'query_scope':'Disjoint probe batches from training partition, not permanently held out',
+            'status':'neutral_insufficient_batches','feeds_RAAR':False}
+        devices=[torch.cuda.current_device()] if self.device.type=='cuda' else []
+        numpy_state=np.random.get_state();python_state=random.getstate()
+        modes=[(module,module.training) for module in model.modules()]
+        try:
+            with torch.random.fork_rng(devices=devices):
+                diagnostic=self.current_round%10==0
+                batches=[]
+                for x,y in self.load_train_data(drop_last=False, phase="local_marginal"):
+                    batches.append(self.move_input(x,y.long().view(-1)))
+                    if len(batches)>=(3 if diagnostic else 2):break
+                if len(batches)>=2:
+                    model.eval()
+                    with torch.no_grad():
+                        sx,sy=batches[0];qx,qy=batches[1]
+                        support=model.extract_backbone(sx).detach().float()
+                        query=model.extract_backbone(qx).detach().float()
+                        z=model.shared_projector(support)
+                        logits=model.shared_head(z)
+                        if self.agreement_weighting and getattr(self, "pcw_prediction_source", "classifier_logits") == "cosine":
+                            logits=model.agreement_logits(z)
+                        anchors=self.semantic_anchors[:self.num_classes].float().detach()
+                        pcw,_=self.anchor_agreement_weight(z,sy,anchors,logits)
+                    gap=float(self.mcl_gap_value())
+                    result=local_marginal_gate(support,sy,query,qy,model.shared_projector,model.shared_head,
+                        anchors,pcw,self.utility_inner_lr,self.lamda,self.mcl,
+                        gap if self.local_marginal_gap else 0.,getattr(self,'mcl_gap_class_cap',False))
+                    self.local_cau_state=result
+                    weight=result['weight'];observed=result['observed']
+                    record.update(status='ok',observed_classes=int(observed.sum()),
+                        mean_abs_weight_delta=float((weight-1).abs().mean()),
+                        mean_abs_weight_delta_observed=float((weight[observed]-1).abs().mean()),
+                        amplified_classes=int((weight>1+1e-6).sum()),
+                        attenuated_classes=int((weight<1-1e-6).sum()),
+                        query_gradient_norm=float(result['query_gradient_norm']),actual_gap=gap,
+                        support_query_loss=float(result['query_loss']))
+                    if diagnostic:
+                        for key in ['weight','score','cosine','support_count','anchor_gradient_norm']:
+                            record[key]=result[key].cpu().tolist()
+                        if len(batches)>=3:
+                            dx,dy=batches[2]
+                            with torch.no_grad():features=model.extract_backbone(dx).detach().float()
+                            record['independent_gate_check']=evaluate_gate(support,sy,features,dy,
+                                model.shared_projector,model.shared_head,anchors,pcw,weight,
+                                self.utility_inner_lr,self.lamda,self.mcl,gap,getattr(self,'mcl_gap_class_cap',False))
+        finally:
+            np.random.set_state(numpy_state);random.setstate(python_state)
+            for module,mode in modes:module.training=mode
+        record['seconds']=time.perf_counter()-started
+        self.latest_local_marginal_record=record
+        name=os.path.basename(str(self.save_folder_name))
+        os.makedirs('logs',exist_ok=True)
+        with open(os.path.join('logs','feddsa_local_marginal_'+name+'.jsonl'),'a') as output:
+            output.write(json.dumps(record,allow_nan=False)+'\n')
+
+    def probe_raar_evidence(self, model):
+        """Keep server evidence sampling from advancing training/prototype RNG."""
         devices = []
         if self.device.type == "cuda":
             devices = [self.device.index if self.device.index is not None
                        else torch.cuda.current_device()]
         with torch.random.fork_rng(devices=devices):
-            return self.compute_anchor_utility(model)
+            return self.compute_raar_evidence(model)
 
     def anchor_loss(self, feats, y, logits):
         zero = feats.new_zeros(())
@@ -769,69 +811,22 @@ class clientfeddsa(Client):
             ).clamp_min(0.25)
             state_weight = (state / state.mean().clamp_min(1e-6)).clamp(0.5, 1.5)
             sample_weight = sample_weight * state_weight.index_select(0, y)
-        if (
-            self.prototype_utility
-            and self.utility_local_gate
-            and self.class_utility is not None
-            and self.class_utility.numel() >= self.num_classes
-        ):
-            utility = self.class_utility[: self.num_classes].to(
-                device=feats.device, dtype=sample_weight.dtype
-            )
-            if getattr(self, "cau_gate_policy", "legacy") != "legacy":
-                if self.raw_cau_gate_payload is None:
-                    raise RuntimeError("Raw CAU gate was not broadcast")
-                utility = self.raw_cau_gate_payload["utility"].to(feats.device)
-                utility_weight = self.raw_cau_gate_payload["weight"].to(feats.device)
-            elif self.utility_positive_only:
-                signal = utility.clamp_min(0.0)
-                utility_weight = signal / (
-                    signal + float(self.utility_temperature)
-                )
-                utility_weight = self.utility_min_weight + (
-                    self.utility_max_weight - self.utility_min_weight
-                ) * utility_weight
-            else:
-                utility_weight = torch.sigmoid(
-                    utility / float(self.utility_temperature)
-                )
-                # Scale before clipping, including when mean normalization follows.
-                utility_weight = 2.0 * utility_weight
-            capture_gate = getattr(self, "capture_utility_gate", False)
-            if capture_gate:
-                before_clip = utility_weight.detach().clone()
-            utility_weight = utility_weight.clamp(
-                self.utility_min_weight, self.utility_max_weight
-            )
-            if capture_gate:
-                before_normalization = utility_weight.detach().clone()
-                normalized_before_clip = (
-                    before_normalization
-                    / before_normalization.mean().clamp_min(1e-6)
-                    if self.utility_weight_normalize
-                    else None
-                )
-            if self.utility_weight_normalize:
-                utility_weight = (
-                    utility_weight / utility_weight.mean().clamp_min(1e-6)
-                ).clamp(self.utility_min_weight, self.utility_max_weight)
-            if capture_gate:
+        if getattr(self, "local_marginal_cau", False):
+            state = self.local_cau_state
+            if state is None or self.local_cau_round != self.current_round:
+                raise RuntimeError("Prepare a fresh local CAU gate before local SGD")
+            weight = state["weight"].to(feats.device)
+            sample_weight = sample_weight * weight.index_select(0, y)
+            metrics["utility_weight_mean"] = weight.mean()
+            metrics["utility_weight_std"] = weight.std(unbiased=False)
+            if getattr(self, "capture_utility_gate", False):
                 self.last_local_utility_gate = {
-                    "utility_before_training": utility.detach().clone(),
-                    "before_clip": before_clip,
-                    "before_normalization": before_normalization,
-                    "normalized_before_clip": normalized_before_clip,
-                    "weight": utility_weight.detach().clone(),
+                    "weight": weight.detach().clone(),
+                    "marginal_benefit": state["score"].detach().clone(),
+                    "cosine": state["cosine"].detach().clone(),
+                    "support_count": state["support_count"].detach().clone(),
                 }
-                if getattr(self, "cau_gate_policy", "legacy") != "legacy":
-                    for key in ("shrinkage", "noise_ema", "effective_clients", "source_class"):
-                        self.last_local_utility_gate["raw_gate_" + key] = (
-                            self.raw_cau_gate_payload[key].detach().clone()
-                        )
                 self.capture_utility_gate = False
-            sample_weight = sample_weight * utility_weight.index_select(0, y)
-            metrics["utility_weight_mean"] = utility_weight.mean()
-            metrics["utility_weight_std"] = utility_weight.std(unbiased=False)
         metrics.update(agree_metrics)
         metrics["final_anchor_weight_mean"] = sample_weight.detach().float().mean()
 

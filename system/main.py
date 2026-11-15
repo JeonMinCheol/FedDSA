@@ -516,31 +516,16 @@ if __name__ == "__main__":
     experimental.add_argument('--reliability_aggregation_geometry', type=str, default='euclidean',
                         choices=['euclidean', 'cosine'],
                         help="[EXPERIMENTAL] Geometry used to score cross-client prototype consistency")
-    parser.add_argument('--prototype_utility', type=str2bool, nargs='?', const=True, default=False,
-                        help="Estimate delayed class-conditional utility with a one-step counterfactual probe")
     parser.add_argument('--utility_inner_lr', type=float, default=0.01,
-                        help="Virtual local step size for the prototype utility probe")
-    parser.add_argument('--utility_temperature', type=float, default=0.1,
-                        help="Temperature for utility-conditioned local anchor supervision")
-    parser.add_argument('--cau_gate_policy', choices=['legacy', 'raw', 'raw_shuffled'], default='legacy',
-                        help="CAU gate: legacy keeps existing behavior; raw uses raw EMA with support/dispersion shrinkage, fixed [0.75,1.25] bounds and no mean normalization; raw_shuffled permutes raw gate class assignments")
-    parser.add_argument('--cau_gate_tau', type=float, default=None,
-                        help="Raw CAU gate scale in loss-gain units; defaults to utility_temperature when omitted")
-    parser.add_argument('--utility_ema', type=float, default=0.25,
-                        help="EMA rate for server class utility state")
-    parser.add_argument('--utility_min_weight', type=float, default=0.25,
-                        help="Minimum utility-conditioned local anchor weight")
-    parser.add_argument('--utility_max_weight', type=float, default=1.5,
-                        help="Maximum utility-conditioned local anchor weight")
-    experimental.add_argument('--utility_local_gate', type=str2bool, nargs='?', const=True, default=True,
-                        help="[EXPERIMENTAL] Apply utility-conditioned weights to local anchor supervision")
-    experimental.add_argument('--utility_weight_normalize', type=str2bool, nargs='?', const=True, default=True,
-                        help="[EXPERIMENTAL] Normalize local utility weights to mean one; false uses 2*sigmoid for signed utility (zero maps to one)")
-    experimental.add_argument('--utility_signal_mode', type=str, default='observed',
-                        choices=['observed', 'shuffled', 'uniform', 'zscore'],
-                        help="[EXPERIMENTAL] Utility signal for controls: observed, shuffled, uniform, or z-scored")
-    experimental.add_argument('--utility_positive_only', type=str2bool, nargs='?', const=True, default=False,
-                        help="[EXPERIMENTAL] Only allow positive counterfactual utility to increase anchor usage")
+                        help="Virtual projector/classifier step size for local CAU and RAAR evidence probes")
+    parser.add_argument('--local_marginal_cau', type=str2bool, nargs='?', const=True, default=False,
+                        help="Enable private current-state local CAU before SGD; false disables it; no server EMA or temperature")
+    parser.add_argument('--local_marginal_gap', type=str2bool, nargs='?', const=True, default=True,
+                        help="Include MCL gap in the local marginal utility probe; actual local/RAAR MCL gaps are unaffected")
+    parser.add_argument('--raar_evidence_assignment', choices=['observed', 'shuffled', 'uniform', 'geometry'], default='observed',
+                        help='Server-only RAAR evidence assignment control; never changes local CAU gates')
+    parser.add_argument('--raar_evidence_ema', '--utility_ema', dest='raar_evidence_ema', type=float, default=0.25,
+                        help="EMA rate for RAAR-only raw loss-gain evidence; never broadcast as local CAU weights")
     experimental.add_argument('--utility_validation_probe', type=str2bool, nargs='?', const=True, default=False,
                         help="[EXPERIMENTAL] Measure independent single-anchor intervention gain for utility validation")
     experimental.add_argument('--reliability_state_alpha', type=float, default=0.25,
