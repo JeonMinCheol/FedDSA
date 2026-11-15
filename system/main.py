@@ -522,6 +522,10 @@ if __name__ == "__main__":
                         help="Virtual local step size for the prototype utility probe")
     parser.add_argument('--utility_temperature', type=float, default=0.1,
                         help="Temperature for utility-conditioned local anchor supervision")
+    parser.add_argument('--cau_gate_policy', choices=['legacy', 'raw', 'raw_shuffled'], default='legacy',
+                        help="CAU gate: legacy keeps existing behavior; raw uses raw EMA with support/dispersion shrinkage, fixed [0.75,1.25] bounds and no mean normalization; raw_shuffled permutes raw gate class assignments")
+    parser.add_argument('--cau_gate_tau', type=float, default=None,
+                        help="Raw CAU gate scale in loss-gain units; defaults to utility_temperature when omitted")
     parser.add_argument('--utility_ema', type=float, default=0.25,
                         help="EMA rate for server class utility state")
     parser.add_argument('--utility_min_weight', type=float, default=0.25,

@@ -19,6 +19,7 @@ from utils.raar_refinement_probe import CachedRAARQueries
 from utils.candidate_noise_statistics import cohort_candidate_confidence
 from utils.raar_next_gap import candidate_next_gap_kwargs
 from utils.uniform_raar_update import apply_uniform_raar
+from utils.cau_raw_gate import raw_cau_payload, update_raw_gate_statistics
 
 
 class FedDSA(Server):
@@ -134,6 +135,8 @@ class FedDSA(Server):
             self.utility_min_weight,
         )
         self.utility_local_gate = bool(getattr(args, "utility_local_gate", True))
+        self.cau_gate_policy = args.cau_gate_policy
+        self.cau_gate_tau = args.cau_gate_tau
         self.utility_signal_mode = str(
             getattr(args, "utility_signal_mode", "observed")
         ).lower()
@@ -696,6 +699,8 @@ class FedDSA(Server):
             "utility_ema": float(self.utility_ema),
             "positive_only": bool(self.utility_positive_only),
             "local": {
+                "gate_policy": self.cau_gate_policy,
+                "raw_gate_tau": self.cau_gate_tau if self.cau_gate_policy != "legacy" else None,
                 "enabled": bool(self.utility_local_gate),
                 "captured_client": int(gate_client.id) if captured else None,
                 "normalize": normalize,
@@ -710,6 +715,9 @@ class FedDSA(Server):
                 "raw_observed": masked(vector(self.last_utility_observed), observation_count),
                 "signal_after_transform": masked(vector(self.last_utility_signal), observation_count),
                 "ema_after_update": vector(self.class_utility),
+                "raw_ema_after_update": vector(getattr(self, "raw_class_utility", None)),
+                "raw_gate_noise_ema": vector(getattr(self, "raw_gate_noise_ema", None)),
+                "raw_gate_effective_clients": vector(getattr(self, "raw_gate_effective_clients", None)),
                 "contributing_clients": vector(self.last_utility_client_count),
                 "client_sample_weighted_std": masked(vector(self.last_utility_client_std), observation_count),
                 "positive_clients": vector(self.last_utility_positive_clients),
@@ -1045,6 +1053,10 @@ class FedDSA(Server):
         
     def send_semantic_state(self, clients=None):
         clients = self.clients if clients is None else clients
+        raw_payload = None
+        if (self.prototype_utility and self.utility_local_gate
+                and self.cau_gate_policy != "legacy"):
+            raw_payload = raw_cau_payload(self, self.cau_gate_policy, self.cau_gate_tau)
         anchors = self.semantic_anchors.detach()
         class_boundary_mode = self.new_anchor_mode == "class_boundary"
         role_mode = self.new_anchor_mode in {
@@ -1101,6 +1113,8 @@ class FedDSA(Server):
                 client.set_class_utility(
                     self.class_utility if self.prototype_utility else None
                 )
+            if hasattr(client, "set_raw_cau_gate"):
+                client.set_raw_cau_gate(raw_payload)
             if hasattr(client, "set_class_boundary_margin"):
                 client.set_class_boundary_margin(
                     self.class_boundary_margin
@@ -1116,6 +1130,9 @@ class FedDSA(Server):
             )
 
     def receive_protos(self):
+        if (self.prototype_utility and self.utility_local_gate
+                and self.cau_gate_policy != "legacy"):
+            self.raw_gate_effective_clients = torch.zeros(self.num_classes, device=self.device)
         if hasattr(self, "raw_class_utility_count"):
             self.raw_class_utility_count.zero_()
         self.last_utility_observed = None
@@ -1326,6 +1343,10 @@ class FedDSA(Server):
                 (difference.square() * client_counts).sum(dim=0)
                 / utility_count_sum.clamp_min(1.0)
             ).clamp_min(0.0).sqrt()
+            if (self.prototype_utility and self.utility_local_gate
+                    and self.cau_gate_policy != "legacy"):
+                update_raw_gate_statistics(
+                    self, utility_count_sum, client_counts, self.last_utility_client_std)
             self.last_utility_positive_clients = (client_valid & (client_values > 0)).sum(dim=0)
             self.last_utility_negative_clients = (client_valid & (client_values < 0)).sum(dim=0)
             if self.prototype_utility and bool(valid.any()):

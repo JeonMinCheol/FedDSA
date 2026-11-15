@@ -95,6 +95,8 @@ class clientfeddsa(Client):
             getattr(args, "utility_positive_only", False)
         )
         self.class_utility = None
+        self.cau_gate_policy = args.cau_gate_policy
+        self.raw_cau_gate_payload = None
         self.latest_utility_metrics = {}
         self.capture_utility_gate = False
         self.last_local_utility_gate = None
@@ -207,6 +209,11 @@ class clientfeddsa(Client):
         self.class_boundary_margin = torch.as_tensor(
             margin, device=self.device, dtype=torch.float32
         ).detach().clone()
+
+    def set_raw_cau_gate(self, payload):
+        self.raw_cau_gate_payload = {
+            key: value.to(self.device).detach().clone() for key, value in payload.items()
+        } if payload is not None else None
 
     def forward_rep_logits(self, model, x):
         rep = model.shared_representation(x)
@@ -771,7 +778,12 @@ class clientfeddsa(Client):
             utility = self.class_utility[: self.num_classes].to(
                 device=feats.device, dtype=sample_weight.dtype
             )
-            if self.utility_positive_only:
+            if getattr(self, "cau_gate_policy", "legacy") != "legacy":
+                if self.raw_cau_gate_payload is None:
+                    raise RuntimeError("Raw CAU gate was not broadcast")
+                utility = self.raw_cau_gate_payload["utility"].to(feats.device)
+                utility_weight = self.raw_cau_gate_payload["weight"].to(feats.device)
+            elif self.utility_positive_only:
                 signal = utility.clamp_min(0.0)
                 utility_weight = signal / (
                     signal + float(self.utility_temperature)
@@ -811,6 +823,11 @@ class clientfeddsa(Client):
                     "normalized_before_clip": normalized_before_clip,
                     "weight": utility_weight.detach().clone(),
                 }
+                if getattr(self, "cau_gate_policy", "legacy") != "legacy":
+                    for key in ("shrinkage", "noise_ema", "effective_clients", "source_class"):
+                        self.last_local_utility_gate["raw_gate_" + key] = (
+                            self.raw_cau_gate_payload[key].detach().clone()
+                        )
                 self.capture_utility_gate = False
             sample_weight = sample_weight * utility_weight.index_select(0, y)
             metrics["utility_weight_mean"] = utility_weight.mean()
