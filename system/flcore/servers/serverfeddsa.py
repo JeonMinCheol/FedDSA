@@ -18,6 +18,7 @@ from utils.raar_prior_refinement import validate_raar_proposal, apply_raar_beta,
 from utils.raar_refinement_probe import CachedRAARQueries
 from utils.candidate_noise_statistics import cohort_candidate_confidence
 from utils.raar_next_gap import candidate_next_gap_kwargs
+from utils.uniform_raar_update import apply_uniform_raar
 
 
 class FedDSA(Server):
@@ -338,7 +339,7 @@ class FedDSA(Server):
         )
         if self.prototype_utility:
             print(f"utility_control=local_only anchor_candidate_mix={self.anchor_candidate_mix}")
-        print(f"raar=NextGap enabled={self.raar_enabled} prototype_aggregation=class_sample_count "
+        print(f"raar=NextGap_uniform_mean_matched enabled={self.raar_enabled} prototype_aggregation=class_sample_count "
               f"gamma={self.anchor_candidate_mix} reference_momentum={self.anchor_momentum}")
         print("=" * 50)
 
@@ -829,7 +830,7 @@ class FedDSA(Server):
             "pcw_prediction_source": getattr(self.args, "pcw_prediction_source", "classifier_logits"),
             "virtual_anchor_supervision": {"mcl_gap": True, "agreement_weighting": False},
             "prototype_trust": self.fast_anchor_proto_trust,
-            "raar_version": "nextgap_prior_marginal_class_count_aggregation",
+            "raar_version": "nextgap_uniform_beta_mean_movement_matched",
             "raar_enabled": self.raar_enabled,
             "anchor_candidate_mix": self.anchor_candidate_mix,
             "anchor_momentum": self.anchor_momentum,
@@ -1999,7 +2000,25 @@ class FedDSA(Server):
             diagnostic = CachedRAARQueries(self.selected_clients, self.current_round, stable,
                                           candidate, self.num_clients, "diagnostic")
             self.candidate_gain_stats["independent_refinement_diagnostic"] = {
-                **diagnostic.evaluate(beta, prior), "feeds_update": False, "query_batch": 4}
+                **diagnostic.evaluate(beta, prior), "feeds_update": False, "query_batch": 4,
+                "scope": "classwise_budget_proposal_before_uniform_allocation"}
+        updated, uniform_beta, uniform_info = apply_uniform_raar(
+            current, candidate, stable, beta, observed, self.anchor_candidate_mix, updated)
+        stats = self.candidate_gain_stats
+        for key in ("applied_beta", "effective_prototype_weights", "component_audit",
+                    "same_state_movement_comparison", "mean_beta", "raised_classes",
+                    "lowered_classes", "unchanged_classes"):
+            stats["classwise_budget_" + key] = stats.pop(key)
+        stats.update(
+            allocation_policy="uniform_mean_matched",
+            applied_beta=uniform_beta.cpu().tolist(),
+            applied_beta_scope="uniform_base_before_common_net_step_scaling",
+            mean_beta=float(uniform_beta.mean()),
+            uniform_update=uniform_info,
+            actual_step_mean_l2=uniform_info["actual_mean_l2"],
+            coefficient_one_is_fixed_ema=False,
+            coefficient_identity_scope="Global net-step scaling also acts on the stable return",
+            classwise_proposal_supplies_budget_only=True)
         self.semantic_anchors.copy_(updated.to(self.semantic_anchors))
 
     @torch.no_grad()
