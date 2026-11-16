@@ -45,7 +45,7 @@ def head_gains(client, model, support, query, validation=None, diagnostic=None):
                 "allocation_query_labels": query[1].detach().cpu().clone(),
                 "query_features": features[2].cpu().clone(),
                 "query_labels": validation[1].detach().cpu().clone(),
-                "mcl_gap": client.mcl_gap_value(), "mcl_gap_class_cap": True,
+                "mcl_gap": client.mcl_gap_value(), "mcl_gap_class_cap": bool(client.mcl_gap_class_cap),
                 "candidate_next_gap": True, "next_local_gap": next_local_gap,
                 "next_gap_mode": client.mcl_gap_mode,
                 "next_gap_policy": {"server_only": True, "local_utility_unchanged": True,

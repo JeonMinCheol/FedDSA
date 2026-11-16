@@ -555,7 +555,9 @@ class FedDSA(Server):
             f"total_min={self.total_elapsed_sec / 60.0:.1f} "
             f"tail={weighted['mcl_tail_frac']:.4f} "
             f"skip={weighted['nonfinite_batches']:.1f} "
-            f"val_grad={weighted['validation_grad_norm']:.4f}"
+            f"val_grad={weighted['validation_grad_norm']:.4f} "
+            f"local_gap={np.mean([float(getattr(c, 'local_gap', 0.0)) for c in self.selected_clients]):.4f} "
+            f"global_gap={np.mean([float(getattr(c, 'global_gap', 0.0)) for c in self.selected_clients]):.4f}"
         )
         if self.new_anchor_mode != "none":
             self.log_new_anchor_diagnostics(round_idx)
@@ -750,7 +752,7 @@ class FedDSA(Server):
             "anchor_candidate_mix": self.anchor_candidate_mix,
             "anchor_momentum": self.anchor_momentum,
             "prototype_aggregation": "class_sample_count",
-            "mcl_gap_class_cap": True,
+            "mcl_gap_class_cap": bool(getattr(self.args, "mcl_gap_class_cap", False)),
             "raar_nextgap": getattr(self, "candidate_gain_stats", None),
             "role_step_clipping": bool(role_mode),
             "active_anchor_update": (
@@ -1786,7 +1788,7 @@ class FedDSA(Server):
                 cache["query_features"], cache["query_labels"],
                 client.model.shared_projector, client.model.shared_head, stable, candidate,
                 prior_beta, client.utility_inner_lr, client.lamda, client.mcl, cache["mcl_gap"],
-                max_weight=self.candidate_trust_max_weight, mcl_gap_class_cap=True,
+                max_weight=self.candidate_trust_max_weight, mcl_gap_class_cap=bool(cache["mcl_gap_class_cap"]),
                 **candidate_next_gap_kwargs(client, cache))
             audit = evidence.get("next_gap_point_audit")
             if not audit or len(audit["raw_gaps"]) != 3:
@@ -1812,7 +1814,7 @@ class FedDSA(Server):
             "candidate_trust_scoring": "prior_marginal",
             "confidence_noise_model": "query_split_cohort",
             "score_query_batch": 3, "acceptance_query_batch": 2,
-            "mcl_gap_included": True, "mcl_gap_class_cap": True,
+            "mcl_gap_included": True, "mcl_gap_class_cap": bool(getattr(self.args, "mcl_gap_class_cap", False)),
             "agreement_in_virtual_update": False, "utility_weights_in_virtual_update": False,
             "quality_mean": [value["mean"].cpu().tolist() for value in estimates],
             "standard_error": [value["standard_error"].cpu().tolist() for value in estimates],

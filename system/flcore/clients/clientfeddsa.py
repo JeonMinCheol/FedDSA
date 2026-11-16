@@ -120,14 +120,24 @@ class clientfeddsa(Client):
         key = f"{self.random_seed}:{self.id}:{self.current_round}:{phase}".encode()
         seed = int.from_bytes(hashlib.sha256(key).digest()[:8], "big")
         generator = torch.Generator(device="cpu").manual_seed(seed)
-        return DataLoader(
-            train_data,
-            self.batch_size if batch_size is None else batch_size,
-            drop_last=drop_last,
-            shuffle=bool(train_data),
-            pin_memory=str(self.device).startswith("cuda"),
-            generator=generator,
-        )
+        batch_size = self.batch_size if batch_size is None else batch_size
+        if self.device.type != "cuda" or not train_data:
+            return DataLoader(train_data, batch_size, drop_last=drop_last, shuffle=bool(train_data),
+                              pin_memory=str(self.device).startswith("cuda"), generator=generator)
+        # Same RandomSampler/generator consumption as the DataLoader above, but only
+        # indices are sampled; images stay on the GPU (no per-batch stack/pin/copy).
+        x_all, y_all = self._device_train_tensors(train_data)
+        index_loader = DataLoader(range(len(train_data)), batch_size, drop_last=drop_last,
+                                  shuffle=True, generator=generator)
+        return ((x_all[i.to(self.device)], y_all[i.to(self.device)]) for i in index_loader)
+
+    def _device_train_tensors(self, train_data):
+        cached = getattr(self, "_device_train_cache", None)
+        if cached is None or cached[0] is not train_data:
+            x = torch.stack([item[0] for item in train_data]).to(self.device)
+            y = torch.stack([item[1] for item in train_data]).to(self.device)
+            cached = self._device_train_cache = (train_data, x, y)
+        return cached[1], cached[2]
 
 
     def move_input(self, x, y):
@@ -283,7 +293,7 @@ class clientfeddsa(Client):
         try:
             for x, y in self.load_train_data(drop_last=False, phase="prototype"):
                 x, y = self.move_input(x, y)
-                with torch.cuda.amp.autocast(enabled=self.amp_enabled):
+                with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.amp_enabled):
                     rep, _ = self.forward_rep_logits(model, x)
                 rep = rep.detach().float()
 
@@ -522,6 +532,7 @@ class clientfeddsa(Client):
         scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
         metric_sums = defaultdict(float)
         metric_batches = 0
+        nonfinite = None
 
         self.update_gap_stats()
         local_epochs = self.local_epochs
@@ -548,11 +559,9 @@ class clientfeddsa(Client):
                         anchor_loss, anchor_metrics = self.anchor_loss(rep, y, pcw_logits)
                         loss = task_loss + anchor_loss
 
-                    if not torch.isfinite(loss):
-                        raise FloatingPointError(
-                            f"FedDSA nonfinite training loss: client={self.id}, "
-                            f"round={self.current_round}; refusing to skip corrupted training"
-                        )
+                    # checked after the epoch to avoid a host sync per batch; still aborts the run
+                    bad = ~torch.isfinite(loss.detach())
+                    nonfinite = bad if nonfinite is None else nonfinite | bad
 
                     optimizer.zero_grad(set_to_none=True)
                     if self.amp_enabled:
@@ -564,13 +573,18 @@ class clientfeddsa(Client):
                         optimizer.step()
 
                     with torch.no_grad():
-                        metric_sums["training_classifier_acc"] += float(logits.detach().argmax(dim=1).eq(y).float().mean())
-                        metric_sums["task_loss"] += float(task_loss.detach().float().item())
-                        metric_sums["anchor_loss"] += float(anchor_loss.detach().float().item())
-                        metric_sums["total_loss"] += float(loss.detach().float().item())
+                        metric_sums["training_classifier_acc"] += logits.detach().argmax(dim=1).eq(y).float().mean()
+                        metric_sums["task_loss"] += task_loss.detach().float()
+                        metric_sums["anchor_loss"] += anchor_loss.detach().float()
+                        metric_sums["total_loss"] += loss.detach().float()
                         for key, value in anchor_metrics.items():
-                            metric_sums[key] += float(value.detach().float().item())
+                            metric_sums[key] += value.detach().float()
                         metric_batches += 1
+                if nonfinite is not None and bool(nonfinite):
+                    raise FloatingPointError(
+                        f"FedDSA nonfinite training loss: client={self.id}, "
+                        f"round={self.current_round}; refusing to skip corrupted training"
+                    )
 
             self.collect_protos(model=model)
             if getattr(self, "candidate_gain_enabled", False):
@@ -590,7 +604,7 @@ class clientfeddsa(Client):
                         self.validation_anchor_observation_loss
                     )
             denom = max(metric_batches, 1)
-            self.latest_train_metrics = {key: value / denom for key, value in metric_sums.items()}
+            self.latest_train_metrics = {key: float(value) / denom for key, value in metric_sums.items()}
             self.latest_train_metrics.update(self.latest_utility_metrics)
             save_item(self.protos, self.role, "protos", self.save_folder_name)
             save_item(model, self.role, "model", self.save_folder_name)
@@ -893,7 +907,7 @@ class clientfeddsa(Client):
             blend = ((recovery_gap / recovery_room) * recovery_floor).clamp(0.0, 1.0)
             reliability = (reliability + blend * (recovery_floor - reliability)).clamp(0.0, 1.0)
 
-            weight = torch.full_like(y, float(reliability.item()), dtype=torch.float32, device=feats.device)
+            weight = reliability.to(torch.float32).expand(y.shape).clone()
             weight = torch.where(both_wrong, torch.sqrt(reliability).expand_as(weight), weight)
 
             if not self.agreement_weighting:

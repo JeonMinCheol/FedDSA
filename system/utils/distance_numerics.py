@@ -15,13 +15,17 @@ import torch
 import torch.nn.functional as F
 
 
+def _flags(left,right,suspect):
+    bad=(~torch.isfinite(left.detach())).any()|(~torch.isfinite(right.detach())).any()
+    bad,count=torch.stack([bad.long(),suspect.sum()]).tolist()
+    return bool(bad),int(count)
+
+
 def guarded_cdist(left, right, *, self_pairs=False, keep_double_fallback=False, audit=None, context='distance'):
     if (left.ndim != 2 or right.ndim != 2 or left.shape[1] != right.shape[1]
             or left.dtype != right.dtype or left.device != right.device
             or left.dtype not in (torch.float32,torch.float64)):
         raise ValueError('Matching float32/float64 Euclidean matrices required')
-    if not bool(torch.isfinite(left).all()) or not bool(torch.isfinite(right).all()):
-        raise FloatingPointError('Nonfinite distance inputs')
     original = torch.cdist(left,right,p=2)
     with torch.no_grad():
         x2=left.detach().double().square().sum(1)
@@ -37,11 +41,16 @@ def guarded_cdist(left, right, *, self_pairs=False, keep_double_fallback=False, 
                 raise ValueError('Self-distance diagonal exclusion requires the same bank')
             eligible.fill_diagonal_(False)
         suspect=eligible&((original.detach().double().square()<=bound)|~torch.isfinite(original.detach()))
-        count=int(suspect.sum())
-        meta={'fallback':count>0,'suspect_pairs':count,'eligible_pairs':int(eligible.sum()),
-            'max_squared_roundoff_bound':float(bound.max()) if bound.numel() else 0.,
-            'original_nonfinite':int((~torch.isfinite(original.detach())&eligible).sum()),
-            'self_diagonal_excluded':bool(self_pairs),'dimension':int(left.shape[1])}
+        bad_inputs,count=_flags(left,right,suspect)  # one host sync instead of several
+    if bad_inputs:
+        raise FloatingPointError('Nonfinite distance inputs')
+    meta=None
+    if audit is not None:
+        with torch.no_grad():
+            meta={'fallback':count>0,'suspect_pairs':count,'eligible_pairs':int(eligible.sum()),
+                'max_squared_roundoff_bound':float(bound.max()) if bound.numel() else 0.,
+                'original_nonfinite':int((~torch.isfinite(original.detach())&eligible).sum()),
+                'self_diagonal_excluded':bool(self_pairs),'dimension':int(left.shape[1])}
     if count:
         # Drop the original graph entirely: even a masked 0*NaN derivative
         # from a damaged MM graph must not contaminate a finite direct result.

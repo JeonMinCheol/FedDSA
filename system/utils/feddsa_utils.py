@@ -34,7 +34,6 @@ def configure_utility_module(args):
                          and not getattr(args, "fixed_anchor", False))
     args.candidate_next_gap = args.candidate_gain_enabled = args.raar_enabled
     args.prototype_count_aggregation = True
-    args.mcl_gap_class_cap = True
     args.prototype_trust_source = "candidate_gain"
     args.candidate_trust_reference = "geometry_prior"
     args.candidate_trust_scoring = "prior_marginal"

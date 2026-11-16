@@ -56,7 +56,7 @@ MODEL_ARGS=(
   --shared_classifier_scale "${SHARED_CLASSIFIER_SCALE}"
 )
 
-DEVICE_ID="${DEVICE_ID:-${CUDA_VISIBLE_DEVICES:-2}}"
+DEVICE_ID="${DEVICE_ID:-${CUDA_VISIBLE_DEVICES:-0}}"
 export CUDA_VISIBLE_DEVICES="${DEVICE_ID}"
 echo "[$(date '+%F %T')] host=$(hostname)"
 echo "workdir=${WORK_DIR}"
@@ -69,10 +69,10 @@ ALGO="${ALGO:-FedSA}"
 
 CMD=(
   "${PYTHON_BIN}" -u main.py
-  -t 3 -ab 1 -lr 0.01 -jr 1 -lbs 128 -ls 1 -nc 20 -ncl 200
+  -t 3 -ab 1 -lr 0.01 -jr 1 -lbs 128 -ls 1 -nc 20 -ncl 100
   -algo "${ALGO}" --max_parallel_clients 1
   --pin_memory True
-  -data TinyImagenet -m HtFE-img-8 -fd 512 -did "${DEVICE_ID} -slr 0.01 --rg_graph_target uniform 
+  -data Cifar100 -m HtFE-img-8 -fd 512 -did "${DEVICE_ID}" -slr 0.01 --rg_graph_target uniform 
   --node_dim 40 --adjalpha 3 --gc_epoch 10 --gnn_learning_rate 0.001 --gnn_weight_decay 0.0001"
   "${MODEL_ARGS[@]}"
 )
@@ -81,7 +81,7 @@ printf 'command:'
 printf ' %q' "${CMD[@]}"
 printf '\n\n'
 
-LOG_FILE="${LOG_FILE:-logs/total-TinyImagenet-HtFE-img-8-fd=512-${ALGO}-${HEAD_MODE}.out}"
+LOG_FILE="${LOG_FILE:-logs/total-Cifar100-HtFE-img-8-fd=512-${ALGO}-${HEAD_MODE}.out}"
 if [[ "${LOG_FILE}" != /* ]]; then
   LOG_FILE="${WORK_DIR}/${LOG_FILE}"
 fi

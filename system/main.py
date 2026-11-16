@@ -602,6 +602,14 @@ if __name__ == "__main__":
     # FedSA
     parser.add_argument('--fedsa_anchor_momentum', type=float, default=0.9999,
                         help="FedSA semantic-anchor EMA momentum")
+    parser.add_argument('--fedsa_eval', type=str, default='proto', choices=['proto', 'head'],
+                        help="FedSA test prediction: nearest global prototype (paper) or local linear head (FedDSA)")
+    parser.add_argument('--projector', '--fedsa_projector', dest='fedsa_projector', type=str, default='pool', choices=['pool', 'linear', 'orthofixed', 'pool_linear'],
+                        help="BaseHeadSplit feature map for all baselines: AdaptiveAvgPool1d (default) or trainable Linear projector (FedDSA)")
+    parser.add_argument('--fedsa_proto_pass', type=str, default='train', choices=['train', 'eval'],
+                        help="FedSA prototypes: accumulated during training (paper) or recollected after training in eval mode (FedDSA)")
+    parser.add_argument('--fedsa_gap_mode', type=str, default='max', choices=['max', 'min'],
+                        help="FedSA MCL gap: max(local, global) (paper) or min (FedDSA)")
     parser.add_argument('-mcl', '--mcl', "--margin_contrastive", dest="margin_contrastive", type=float, default=1.0)
     parser.add_argument('--mcl_variant', type=str, default='fedsa',
                         choices=['fedsa', 'hard_negative'],
@@ -609,6 +617,8 @@ if __name__ == "__main__":
     parser.add_argument('--mcl_gap_mode', type=str, default='min',
                         choices=['min', 'max'],
                         help="Combine local/global prototype gaps with the smaller or larger gap")
+    parser.add_argument('--mcl_gap_class_cap', type=str2bool, nargs='?', const=True, default=False,
+                        help="Cap the MCL gap per class (old adopted profile used true)")
     parser.add_argument('--mcl_hard_margin', type=float, default=0.5,
                         help="Target anchor margin for hard-negative MCL")
     parser.add_argument('-cc', "--classifier_calibration", type=float, default=1.0)

@@ -29,6 +29,9 @@ class clientSA(Client):
         self.lamda = float(args.lamda)
         self.mcl = float(args.margin_contrastive)
         self.cc = float(args.classifier_calibration)
+        self.gap_reduce = min if getattr(args, "fedsa_gap_mode", "max") == "min" else max
+        self.eval_head = getattr(args, "fedsa_eval", "proto") == "head"
+        self.eval_protos = getattr(args, "fedsa_proto_pass", "train") == "eval"
         self.use_amp = bool(getattr(args, "use_amp", self.device.type == "cuda"))
         self.amp_enabled = bool(self.use_amp and self.device.type == "cuda")
 
@@ -130,6 +133,19 @@ class clientSA(Client):
                         loss.backward()
                         optimizer.step()
 
+            if self.eval_protos:
+                # FedDSA-style: recollect prototypes with the final model in eval mode
+                model.eval()
+                proto_sum = proto_count = None
+                with torch.no_grad():
+                    for x, y in self.load_train_data(drop_last=False):
+                        x, y = self._move_input(x, y)
+                        rep = model.base(x).float()
+                        if proto_sum is None:
+                            proto_sum = torch.zeros(self.num_classes, rep.shape[1], device=rep.device)
+                            proto_count = torch.zeros(self.num_classes, device=rep.device)
+                        proto_sum.index_add_(0, y, rep)
+                        proto_count.index_add_(0, y, torch.ones_like(y, dtype=proto_count.dtype))
             self.protos = self._protos_from_sums(proto_sum, proto_count)
             denom = max(metric_batches, 1)
             self.latest_train_metrics = {
@@ -241,7 +257,7 @@ class clientSA(Client):
 
         anchors = anchors.to(device=feats.device, dtype=feats.dtype)
         dist = torch.cdist(feats.float(), anchors.float(), p=2)
-        gap = max(float(self.local_gap), float(self.global_gap), 0.0)
+        gap = max(self.gap_reduce(float(self.local_gap), float(self.global_gap)), 0.0)
         if gap > 0:
             one_hot = F.one_hot(y.long(), self.num_classes).to(device=feats.device, dtype=dist.dtype)
             dist = dist + one_hot * gap
@@ -301,7 +317,10 @@ class clientSA(Client):
                     rep = model.base(x)
 
                     proto_score = (rep.detach().float().unsqueeze(1) - proto_matrix.unsqueeze(0)).pow(2).mean(dim=2)
-                    pred = proto_labels.index_select(0, proto_score.argmin(dim=1))
+                    if self.eval_head:
+                        pred = model.head(rep).argmax(dim=1)
+                    else:
+                        pred = proto_labels.index_select(0, proto_score.argmin(dim=1))
                     test_acc += pred.eq(y).sum().item()
                     test_num += y.shape[0]
 

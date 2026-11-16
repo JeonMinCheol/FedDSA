@@ -736,6 +736,7 @@ class Server(object):
         print("Averaged Test AUC: {:.4f}".format(test_auc))
         # self.print_(test_acc, train_acc, train_loss)
         print("Std Test Accuracy: {:.4f}".format(np.std(accs)))
+        print("Per-client Test Accuracy: " + " ".join(f"{i}:{a:.4f}" for i, a in zip(stats[0], accs)))
         print("Std Test AUC: {:.4f}".format(np.std(aucs)))
 
     def print_(self, test_acc, test_auc, train_loss):

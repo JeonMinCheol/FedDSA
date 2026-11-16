@@ -118,7 +118,17 @@ class BaseHeadSplit(nn.Module):
             self.base = build_model_from_spec(args.models[cid % len(args.models)], args)
 
         head = None # you may need more code for pre-existing heterogeneous heads
-        if hasattr(self.base, 'heads'):
+        projector = getattr(args, 'fedsa_projector', 'pool')
+        if projector in ('linear', 'orthofixed'):
+            # linear: FedDSA-style trainable projector; orthofixed: frozen random orthogonal
+            # map (control: keeps the information the pool discards, learns nothing)
+            base, in_dim = _replace_classifier_with_identity(self.base)
+            proj = nn.Linear(in_dim, feature_dim, bias=(projector == 'linear'))
+            if projector == 'orthofixed':
+                nn.init.orthogonal_(proj.weight)
+                proj.weight.requires_grad_(False)
+            self.base = nn.Sequential(base, nn.Flatten(1), proj)
+        elif hasattr(self.base, 'heads'):
             head = self.base.heads
             self.base.heads = nn.AdaptiveAvgPool1d(feature_dim)
         elif hasattr(self.base, 'head'):
@@ -132,6 +142,9 @@ class BaseHeadSplit(nn.Module):
             self.base.classifier = nn.AdaptiveAvgPool1d(feature_dim)
         else:
             raise('The base model does not have a classification head.')
+        if projector == 'pool_linear':
+            # control: pool as usual, then a trainable Linear(K, K) (parameter-matched)
+            self.base = nn.Sequential(self.base, nn.Linear(feature_dim, feature_dim))
 
         if hasattr(args, 'heads'):
             self.head = eval(args.heads[cid % len(args.heads)])
