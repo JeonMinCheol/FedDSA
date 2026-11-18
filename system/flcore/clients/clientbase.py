@@ -57,6 +57,10 @@ class Client(object):
         self.cache_client_data = not bool(getattr(args, "no_client_data_cache", False))
         self.persist_client_models = bool(getattr(args, "persist_client_models", False))
         self._client_data_cache = {}
+        self.oracle_pool = float(getattr(args, "oracle_pool", 0.0))
+        self.augment = bool(getattr(args, "fedsa_augment", False))  # standard augmentation for every baseline's train loop
+        self.oracle_mash = int(getattr(args, "oracle_mash", 1))
+        self.num_clients = args.num_clients
 
         model_file = _item_file(self.role, 'model', self.save_folder_name)
         has_initial_model = model_file in _ITEM_STORE or (not _is_temp_path(self.save_folder_name) and os.path.exists(model_file))
@@ -99,7 +103,36 @@ class Client(object):
                 is_train=is_train,
                 few_shot=self.few_shot,
             )
+        if is_train and self.oracle_pool > 0 and ("oracle",) not in self._client_data_cache:
+            self._client_data_cache[cache_key] = self._oracle_pool_data(self._client_data_cache[cache_key])
+            self._client_data_cache[("oracle",)] = True
         return self._client_data_cache[cache_key]
+
+    def _oracle_pool_data(self, local):
+        """Privacy-violating ceiling test: add other clients' real samples of locally present classes,
+        up to oracle_pool x the local size, keeping the local label proportions (personalized test unchanged)."""
+        labels = torch.stack([y for _, y in local])
+        counts = torch.bincount(labels, minlength=self.num_classes).float()
+        by_cls = {}
+        for j in range(self.num_clients):
+            if j == self.id:
+                continue
+            mine = {}
+            for it in read_client_data(self.dataset, j, is_train=True):
+                mine.setdefault(int(it[1]), []).append(it)
+            for c, items in mine.items():
+                if self.oracle_mash > 1:  # FedMix-style baseline: client j uploads means of k of its own class-c images
+                    perm = self.rng.permutation(len(items))
+                    items = [(torch.stack([items[i][0] for i in perm[g:g + self.oracle_mash]]).mean(0), items[0][1])
+                             for g in range(0, len(perm) - self.oracle_mash + 1, self.oracle_mash)]
+                by_cls.setdefault(c, []).extend(items)
+        extra = []
+        for c in torch.nonzero(counts).flatten().tolist():
+            pool = by_cls.get(c, [])
+            k = min(len(pool), int(round(self.oracle_pool * counts[c].item())))
+            extra += [pool[i] for i in self.rng.permutation(len(pool))[:k]]
+        print(f"[oracle_pool] client {self.id}: local {len(local)} + extra {len(extra)} (mash k={self.oracle_mash})")
+        return local + extra
 
     def load_train_data(self, batch_size=None, drop_last=True):
         if batch_size == None:
@@ -240,7 +273,9 @@ def item_exists(role, item_name, item_path=None):
 def load_item(role, item_name, item_path=None):
     item_file = _item_file(role, item_name, item_path)
     if item_file in _ITEM_STORE:
-        return _ITEM_STORE[item_file]
+        # disk semantics for server items: every client gets its own copy (a shared object made FML/FedAPEN/FedMRL/FedKD
+        # clients train the server's model one after another instead of in parallel, and FedAvg then averaged one model)
+        return copy.deepcopy(_ITEM_STORE[item_file]) if role == "Server" else _ITEM_STORE[item_file]
     if _use_memory_store(item_path):
         return None
 

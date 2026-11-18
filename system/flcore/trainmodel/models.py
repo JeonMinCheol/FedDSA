@@ -8,6 +8,7 @@ from flcore.trainmodel.resnet import *
 from flcore.trainmodel.alexnet import *
 from flcore.trainmodel.mobilenet_v2 import *
 from flcore.trainmodel.transformer import *
+from flcore.trainmodel.sensor_models import *
 from flcore.trainmodel.input_utils import image_aware_spec, adapt_image_channels, conv_flatten_dim
 
 
@@ -105,6 +106,29 @@ def _replace_classifier_with_identity(model: nn.Module):
     raise NotImplementedError(f"Could not find a supported classifier head in `{type(model).__name__}`.")
 
 
+class OrthoLinear(nn.Module):
+    """x @ Q + b with Q = qr(V) (orthonormal columns); ~50x faster than parametrizations.orthogonal here."""
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.V = nn.Parameter(nn.init.orthogonal_(torch.empty(in_dim, out_dim)))
+        self.bias = nn.Parameter(torch.zeros(out_dim))
+
+    def forward(self, x):
+        q, r = torch.linalg.qr(self.V)
+        q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)  # unique, continuous QR
+        return x @ q + self.bias
+
+
+class ChannelAffine(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, x):
+        return x * self.scale + self.bias
+
+
 # split an original model into a base and a head
 class BaseHeadSplit(nn.Module):
     def __init__(self, args, cid=0, feature_dim=None, is_global=False):
@@ -119,15 +143,24 @@ class BaseHeadSplit(nn.Module):
 
         head = None # you may need more code for pre-existing heterogeneous heads
         projector = getattr(args, 'fedsa_projector', 'pool')
-        if projector in ('linear', 'orthofixed'):
+        if projector in ('linear', 'orthofixed', 'orthoaffine', 'ortholearn', 'dimaware'):
             # linear: FedDSA-style trainable projector; orthofixed: frozen random orthogonal
             # map (control: keeps the information the pool discards, learns nothing)
             base, in_dim = _replace_classifier_with_identity(self.base)
             proj = nn.Linear(in_dim, feature_dim, bias=(projector == 'linear'))
-            if projector == 'orthofixed':
+            if projector in ('orthofixed', 'orthoaffine'):
                 nn.init.orthogonal_(proj.weight)
                 proj.weight.requires_grad_(False)
-            self.base = nn.Sequential(base, nn.Flatten(1), proj)
+            if projector == 'ortholearn':
+                # VkD-style: trainable but kept exactly orthonormal (keeps geometry, learns direction)
+                proj = OrthoLinear(in_dim, feature_dim)
+            if projector == 'dimaware' and in_dim == feature_dim:
+                proj = nn.Identity()  # native dim already K: no extra layer (pool was identity here too)
+            layers = [base, nn.Flatten(1), proj]
+            if projector == 'orthoaffine':
+                # frozen orthogonal map + learnable per-dim scale/bias (sign/scale fit to anchors)
+                layers.append(ChannelAffine(feature_dim))
+            self.base = nn.Sequential(*layers)
         elif hasattr(self.base, 'heads'):
             head = self.base.heads
             self.base.heads = nn.AdaptiveAvgPool1d(feature_dim)
@@ -394,6 +427,20 @@ class AmazonMLP(nn.Module):
         
 
 # # https://github.com/katsura-jp/fedavg.pytorch/blob/master/src/models/cnn.py
+class SmallBNCNN(nn.Module):
+    """Small shared model with BatchNorm (~0.1M params): its FedAvg'd BN statistics summarize all clients' data,
+    which client-side model inversion (utils/cm_invert.py) matches."""
+    def __init__(self, in_features=3, num_classes=10, width=64):
+        super().__init__()
+        c = lambda i, o: [nn.Conv2d(i, o, 3, padding=1, bias=False), nn.BatchNorm2d(o), nn.ReLU()]
+        self.features = nn.Sequential(*c(in_features, width), nn.MaxPool2d(2), *c(width, 2 * width), nn.MaxPool2d(2),
+                                      *c(2 * width, 2 * width), nn.AdaptiveAvgPool2d(1), nn.Flatten())
+        self.fc = nn.Linear(2 * width, num_classes)
+
+    def forward(self, x):
+        return self.fc(self.features(x))
+
+
 # class FedAvgCNN(nn.Module):
 #     def __init__(self, in_features=1, num_classes=10, dim=1024):
 #         super().__init__()
@@ -424,6 +471,73 @@ class AmazonMLP(nn.Module):
 #         x = self.act(self.fc1(x))
 #         x = self.fc(x)
 #         return x
+
+class _WBlock(nn.Module):
+    def __init__(self, cin, cout, stride):
+        super().__init__()
+        self.conv1 = nn.Conv2d(cin, cout, 3, stride, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(cout)
+        self.conv2 = nn.Conv2d(cout, cout, 3, 1, 1, bias=False)
+        self.bn2 = nn.BatchNorm2d(cout)
+        self.down = None if stride == 1 and cin == cout else nn.Sequential(
+            nn.Conv2d(cin, cout, 1, stride, bias=False), nn.BatchNorm2d(cout))
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + (x if self.down is None else self.down(x)))
+
+
+class WidthResNet18(nn.Module):
+    """torchvision-topology ResNet18 (7x7/2 stem + maxpool, [2,2,2,2] basic blocks) with every channel count scaled by
+    `width`, so a width-r model's tensors are the leading-channel slices of the width-1 model (HeteroFL-style nesting).
+    shortcut: BN keeps running stats that are averaged on overlaps (HeteroFL uses static BN); switch if slices drift."""
+
+    def __init__(self, width=1.0, num_classes=10, in_features=3):
+        super().__init__()
+        c = [max(4, int(round(64 * width * m))) for m in (1, 2, 4, 8)]
+        self.conv1 = nn.Conv2d(in_features, c[0], 7, 2, 3, bias=False)
+        self.bn1 = nn.BatchNorm2d(c[0])
+        self.maxpool = nn.MaxPool2d(3, 2, 1)
+        layers, cin = [], c[0]
+        for i, cout in enumerate(c):
+            layers.append(nn.Sequential(_WBlock(cin, cout, 1 if i == 0 else 2), _WBlock(cout, cout, 1)))
+            cin = cout
+        self.layer1, self.layer2, self.layer3, self.layer4 = layers
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(c[3], num_classes)
+
+    def forward(self, x):
+        x = self.maxpool(F.relu(self.bn1(self.conv1(x))))
+        x = self.layer4(self.layer3(self.layer2(self.layer1(x))))
+        return self.fc(torch.flatten(self.avgpool(x), 1))
+
+
+class CIFARResNet(nn.Module):
+    """He et al. (2016) CIFAR ResNet with 6n+2 layers: 3x3 stride-1 stem (keeps the 32x32 resolution, unlike the
+    ImageNet 7x7/2 + maxpool stem), three stages of n basic blocks with 16/32/64 channels times `width`.
+    Width-r tensors are leading slices of the width-1 model, so it can also serve as a nested shared model."""
+
+    def __init__(self, depth=20, width=1.0, num_classes=10, in_features=3):
+        super().__init__()
+        assert (depth - 2) % 6 == 0, "depth must be 6n+2"
+        n = (depth - 2) // 6
+        c = [max(4, int(round(16 * width * m))) for m in (1, 2, 4)]
+        self.conv1 = nn.Conv2d(in_features, c[0], 3, 1, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(c[0])
+        stages, cin = [], c[0]
+        for i, cout in enumerate(c):
+            stages.append(nn.Sequential(_WBlock(cin, cout, 1 if i == 0 else 2), *[_WBlock(cout, cout, 1) for _ in range(n - 1)]))
+            cin = cout
+        self.layer1, self.layer2, self.layer3 = stages
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(c[2], num_classes)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.layer3(self.layer2(self.layer1(x)))
+        return self.fc(torch.flatten(self.avgpool(x), 1))
+
 
 class FedAvgCNN(nn.Module):
     def __init__(self, in_features=1, num_classes=10, dim=1024, input_shape=None):

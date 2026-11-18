@@ -1,3 +1,4 @@
+from utils.augment import augment_batch
 import copy
 import torch
 import torch.nn as nn
@@ -38,6 +39,8 @@ class clientFD(Client):
                 else:
                     x = x.to(self.device)
                 y = y.to(self.device)
+                if self.augment:  # same standard augmentation as the FedSA runs (crop + flip)
+                    x = augment_batch(x)
                 if self.train_slow:
                     time.sleep(0.1 * np.abs(np.random.rand()))
                 output = model(x)
@@ -49,7 +52,7 @@ class clientFD(Client):
                         y_c = yy.item()
                         if type(global_logits[y_c]) != type([]):
                             logit_new[i, :] = global_logits[y_c].data
-                    loss += self.loss(output, logit_new) * self.lamda
+                    loss += self.loss(output, logit_new.softmax(1)) * self.lamda  # soft target must be a distribution (raw logits diverged)
 
                 for i, yy in enumerate(y):
                     y_c = yy.item()
@@ -91,7 +94,7 @@ class clientFD(Client):
                         y_c = yy.item()
                         if type(global_logits[y_c]) != type([]):
                             logit_new[i, :] = global_logits[y_c].data
-                    loss += self.loss(output, logit_new) * self.lamda
+                    loss += self.loss(output, logit_new.softmax(1)) * self.lamda  # soft target must be a distribution (raw logits diverged)
                     
                 train_num += y.shape[0]
                 losses += loss.item() * y.shape[0]

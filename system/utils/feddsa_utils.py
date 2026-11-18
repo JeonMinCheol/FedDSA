@@ -241,3 +241,37 @@ def aggregate_count_prototypes(records, feat_dim):
             'weighted_center': center.cpu().tolist(),
             'uniform_center': uniform.cpu().tolist(), 'client_influence': influences}
     return weighted, scatter, support, diagnostics
+
+
+@torch.no_grad()
+def simplex_anchor_bank(gaussian_anchors, num_classes, feat_dim, generator):
+    """Equal-angle (simplex ETF) codebook, zero-padded to feat_dim, scaled to the Gaussian bank's mean norm."""
+    device = gaussian_anchors.device
+    classes = num_classes
+    simplex = torch.eye(classes, device=device, dtype=torch.float32)
+    simplex -= simplex.mean(dim=0, keepdim=True)
+    if feat_dim >= classes:
+        codebook = torch.nn.functional.pad(
+            simplex, (0, feat_dim - classes)
+        )
+    else:
+        # A low-dimensional projection is only a fallback for feature
+        # spaces smaller than the class count.
+        projection = torch.randn(
+            classes, feat_dim, generator=generator, dtype=torch.float32
+        )
+        codebook = simplex @ projection.to(device)
+    codebook = torch.nn.functional.normalize(codebook, dim=1)
+    if feat_dim >= classes:
+        pairwise = codebook @ codebook.t()
+        off_diagonal = ~torch.eye(
+            classes, device=device, dtype=torch.bool
+        )
+        expected = -1.0 / float(classes - 1)
+        if (pairwise[off_diagonal] - expected).abs().max() > 1e-4:
+            raise RuntimeError("simplex anchor geometry check failed")
+    target_norm = gaussian_anchors.float().norm(dim=1).mean().clamp_min(1e-6)
+    codebook = codebook * target_norm
+    if not torch.isfinite(codebook).all():
+        raise RuntimeError("non-finite anchor codebook")
+    return codebook.to(device=device, dtype=gaussian_anchors.dtype)

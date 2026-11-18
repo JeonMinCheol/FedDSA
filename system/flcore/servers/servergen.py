@@ -31,7 +31,7 @@ class FedGen(Server):
                                 args.feature_dim, 
                                 self.device
                             ).to(self.device)
-        if args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name:
+        if load_item(self.role, 'generative_model', self.save_folder_name) is None:  # also for 'temp_<run>' folders
             save_item(generative_model, self.role, 'generative_model', self.save_folder_name)
         self.loss = nn.CrossEntropyLoss()
         self.generator_learning_rate = args.generator_learning_rate
@@ -104,7 +104,7 @@ class FedGen(Server):
 
     def train_generator(self):
         generative_model = load_item(self.role, 'generative_model', self.save_folder_name)
-        generative_optimizer = torch.optim.SGD(
+        generative_optimizer = torch.optim.Adam(
             params=generative_model.parameters(),
             lr=self.generator_learning_rate, betas=(0.9, 0.999),
             eps=1e-08, weight_decay=0, amsgrad=False)
@@ -124,6 +124,7 @@ class FedGen(Server):
             loss = self.loss(logits, labels)
             loss.backward()
             generative_optimizer.step()
+        save_item(generative_model, self.role, 'generative_model', self.save_folder_name)  # was kept only by object aliasing
 
     def aggregate_parameters(self):
         assert (len(self.uploaded_ids) > 0)

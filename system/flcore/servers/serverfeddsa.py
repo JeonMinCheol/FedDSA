@@ -12,7 +12,7 @@ from mmcv.cnn import build_norm_layer
 from flcore.clients.clientbase import load_item, save_item
 from flcore.clients.clientfeddsa import clientfeddsa
 from flcore.servers.serverbase import Server
-from utils.feddsa_utils import prototype_anchor_metrics, configure_utility_module, aggregate_count_prototypes
+from utils.feddsa_utils import prototype_anchor_metrics, configure_utility_module, aggregate_count_prototypes, simplex_anchor_bank
 from utils.raar_marginal_refinement import marginal_raar_direction_scores, propose_marginal_raar_beta
 from utils.raar_prior_refinement import validate_raar_proposal, apply_raar_beta, compare_raar_movement
 from utils.raar_refinement_probe import CachedRAARQueries
@@ -326,35 +326,7 @@ class FedDSA(Server):
 
         if self.anchor_codebook == "gaussian" or self.num_classes < 2:
             return gaussian_anchors.detach().clone()
-
-        classes = self.num_classes
-        simplex = torch.eye(classes, device=self.device, dtype=torch.float32)
-        simplex -= simplex.mean(dim=0, keepdim=True)
-        if self.feat_dim >= classes:
-            codebook = torch.nn.functional.pad(
-                simplex, (0, self.feat_dim - classes)
-            )
-        else:
-            # A low-dimensional projection is only a fallback for feature
-            # spaces smaller than the class count.
-            projection = torch.randn(
-                classes, self.feat_dim, generator=generator, dtype=torch.float32
-            )
-            codebook = simplex @ projection.to(self.device)
-        codebook = torch.nn.functional.normalize(codebook, dim=1)
-        if self.feat_dim >= classes:
-            pairwise = codebook @ codebook.t()
-            off_diagonal = ~torch.eye(
-                classes, device=self.device, dtype=torch.bool
-            )
-            expected = -1.0 / float(classes - 1)
-            if (pairwise[off_diagonal] - expected).abs().max() > 1e-4:
-                raise RuntimeError("simplex anchor geometry check failed")
-        target_norm = gaussian_anchors.float().norm(dim=1).mean().clamp_min(1e-6)
-        codebook = codebook * target_norm
-        if not torch.isfinite(codebook).all():
-            raise RuntimeError("non-finite anchor codebook")
-        return codebook.to(device=self.device, dtype=gaussian_anchors.dtype)
+        return simplex_anchor_bank(gaussian_anchors, self.num_classes, self.feat_dim, generator)
 
     def record_mapping_diagnostics(self, round_idx, adaptive_anchors, stable_anchors):
         metrics = prototype_anchor_metrics(

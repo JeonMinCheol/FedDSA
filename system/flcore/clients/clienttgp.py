@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
+from utils.augment import augment_batch
 from flcore.clients.clientbase import Client, load_item, save_item
 from collections import defaultdict
 
@@ -9,6 +10,7 @@ from collections import defaultdict
 class clientTGP(Client):
     def __init__(self, args, id, train_samples, test_samples, **kwargs):
         super().__init__(args, id, train_samples, test_samples, **kwargs)
+        self.augment = bool(getattr(args, "fedsa_augment", False))  # same standard augmentation as FedSA runs
         torch.manual_seed(0)
         self.device = torch.device(args.device)
 
@@ -118,6 +120,8 @@ class clientTGP(Client):
         for step in range(max_local_epochs):
             for x, y in trainloader:
                 x, y = self._move_input(x, y)
+                if getattr(self, "augment", False):
+                    x = augment_batch(x)
                 if self.train_slow:
                     time.sleep(0.1 * np.abs(np.random.rand()))
 

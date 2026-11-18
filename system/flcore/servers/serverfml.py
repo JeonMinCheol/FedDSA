@@ -10,7 +10,7 @@ from flcore.trainmodel.models import BaseHeadSplit
 class FML(Server):
     def __init__(self, args, times):
         super().__init__(args, times)
-        if args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name:
+        if args.save_folder_name == 'temp' or args.save_folder_name.startswith('temp_') or 'temp' not in args.save_folder_name:
             if hasattr(args, 'global_model'):
                 global_model = BaseHeadSplit(args, is_global=True).to(args.device)
             else:
@@ -64,13 +64,12 @@ class FML(Server):
         assert (len(self.uploaded_ids) > 0)
 
         global_model = load_item(self.role, 'global_model', self.save_folder_name)
-        for param in global_model.parameters():
-            param.data.zero_()
-            
-        for cid in self.uploaded_ids:
-            client = self.clients[cid]
-            client_model = load_item(client.role, 'global_model', client.save_folder_name)
-            for server_param, client_param in zip(global_model.parameters(), client_model.parameters()):
-                server_param.data += client_param.data.clone() * 1/len(self.uploaded_ids)
+        states = [load_item(self.clients[cid].role, 'global_model', self.clients[cid].save_folder_name).state_dict()
+                  for cid in self.uploaded_ids]
+        # average every float tensor incl. BatchNorm running stats: averaging parameters() only left the server's BN
+        # statistics at their init values, which broke eval-mode use of shared models with BN (ResNet as meme model)
+        global_model.load_state_dict({k: (sum(st[k].float() for st in states) / len(states)).to(v.dtype)
+                                      if v.is_floating_point() else states[0][k].clone()
+                                      for k, v in global_model.state_dict().items()})
 
         save_item(global_model, self.role, 'global_model', self.save_folder_name)

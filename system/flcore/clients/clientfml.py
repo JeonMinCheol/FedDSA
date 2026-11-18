@@ -1,3 +1,4 @@
+from utils.augment import augment_batch
 import copy
 import torch
 import torch.nn as nn
@@ -40,6 +41,8 @@ class clientFML(Client):
                 else:
                     x = x.to(self.device)
                 y = y.to(self.device)
+                if self.augment:  # same standard augmentation as the FedSA runs (crop + flip)
+                    x = augment_batch(x)
                 if self.train_slow:
                     time.sleep(0.1 * np.abs(np.random.rand()))
                 output = model(x)

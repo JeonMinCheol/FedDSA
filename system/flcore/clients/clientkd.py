@@ -1,3 +1,4 @@
+from utils.augment import augment_batch
 import copy
 import torch
 import torch.nn as nn
@@ -15,7 +16,7 @@ class clientKD(Client):
         self.mentee_learning_rate = args.mentee_learning_rate
         self.energy = args.T_start
 
-        if args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name:
+        if load_item(self.role, 'W_h', self.save_folder_name) is None:  # also for 'temp_<run>' memory-only folders
             W_h = nn.Linear(args.feature_dim, args.feature_dim, bias=False).to(self.device)
             save_item(W_h, self.role, 'W_h', self.save_folder_name)
             global_model = load_item('Server', 'global_model', self.save_folder_name)
@@ -50,6 +51,8 @@ class clientKD(Client):
                 else:
                     x = x.to(self.device)
                 y = y.to(self.device)
+                if self.augment:  # same standard augmentation as the FedSA runs (crop + flip)
+                    x = augment_batch(x)
                 if self.train_slow:
                     time.sleep(0.1 * np.abs(np.random.rand()))
                 rep = model.base(x)

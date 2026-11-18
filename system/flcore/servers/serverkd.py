@@ -12,7 +12,7 @@ from flcore.trainmodel.models import BaseHeadSplit
 class FedKD(Server):
     def __init__(self, args, times):
         super().__init__(args, times)
-        if args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name:
+        if args.save_folder_name == 'temp' or args.save_folder_name.startswith('temp_') or 'temp' not in args.save_folder_name:
             if hasattr(args, 'global_model'):
                 global_model = BaseHeadSplit(args, is_global=True).to(args.device)
             else:

@@ -34,7 +34,8 @@ class FedTGP(Server):
         self.server_hidden_dim = self.feature_dim
         
         self.TGP = None
-        if args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name:
+        # temp_<run> folders are fresh in-memory runs too (no checkpoint to resume)
+        if args.save_folder_name == 'temp' or args.save_folder_name.startswith('temp_') or 'temp' not in args.save_folder_name:
             TGP = Trainable_Global_Prototypes(
                 self.num_classes, 
                 self.server_hidden_dim, 

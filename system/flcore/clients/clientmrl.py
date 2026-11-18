@@ -1,3 +1,4 @@
+from utils.augment import augment_batch
 import copy
 import torch
 import torch.nn as nn
@@ -16,7 +17,7 @@ class clientMRL(Client):
 
         self.sub_feature_dim = args.sub_feature_dim
         
-        if args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name:
+        if load_item(self.role, 'proj', self.save_folder_name) is None:  # also for 'temp_<run>' memory-only folders
             proj = nn.Linear(args.feature_dim + args.sub_feature_dim, args.feature_dim).to(self.device)
             save_item(proj, self.role, 'proj', self.save_folder_name)
 
@@ -45,6 +46,8 @@ class clientMRL(Client):
                 else:
                     x = x.to(self.device)
                 y = y.to(self.device)
+                if self.augment:  # same standard augmentation as the FedSA runs (crop + flip)
+                    x = augment_batch(x)
                 if self.train_slow:
                     time.sleep(0.1 * np.abs(np.random.rand()))
                 rep_g = global_model.base(x)

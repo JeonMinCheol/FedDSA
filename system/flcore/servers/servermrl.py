@@ -10,7 +10,8 @@ from flcore.trainmodel.models import BaseHeadSplit
 class FedMRL(Server):
     def __init__(self, args, times):
         super().__init__(args, times)
-        if args.save_folder_name == 'temp' or 'temp' not in args.save_folder_name:
+        # create unless resuming (the old name test skipped creation for 'temp_<run>' memory-only folders)
+        if load_item(self.role, 'global_model', self.save_folder_name) is None:
             if hasattr(args, 'global_model'):
                 global_model = BaseHeadSplit(
                     args, 
