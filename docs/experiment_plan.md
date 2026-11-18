@@ -6,14 +6,14 @@
 
 | 주장 | 내용 | 받치는 실험 |
 |---|---|---|
-| C1 진단 | 증강이 없는 HtFL에서 구조 간 채널(프로토타입, 앵커, logit, 생성기)은 Local과 같고, 앵커를 정교하게 다듬어도(FedDSA) 넘지 못한다. 같은 구조 가중치 평균만 지식을 옮긴다 | 3절 본 표의 Local·HtFL 기준선, 6절 진단 |
+| C1 진단 | 증강이 없는 HtFL에서 구조 간 채널(프로토타입, 앵커, logit, 생성기)은 Local과 같다. 같은 구조 가중치 평균만 지식을 옮긴다 | 3절 본 표의 Local·HtFL 기준선, 6절 진단 |
 | C2 방법 | 공유 쌍둥이(안정) + 이기종 private 잔차(가소) + 암기 게이트 + 재정렬 + 전역 held-out α | 3절 본 표, 4절 ablation |
 | C3 효율 | 동결 후 통신 0, 쌍둥이 게이트로 private 학습·추론 연산 절감, 동결 후 특징 캐시 | 7절 통신·기기 측정 |
 | C4 배포 | 동결 후 회복으로 원래 모델만 배포해도 기준선 수준 | 3절 "원래 모델만" 열 |
 
-FedDSA(이중 앵커)는 별도 논문으로 내지 않는다. C1의 근거와 "안정성/가소성 분리" 개념으로 흡수한다.
+FedDSA(이중 앵커)는 쓰지 않는다(11-18 사용자 결정). 논문에서도 다루지 않는다.
 
-## 1. 고정 프로토콜 (모든 run 공통, FedDSA 논문과 같음)
+## 1. 고정 프로토콜 (모든 run 공통, 예전 원고 reference/main.pdf와 같음)
 
 - HtFLlib, HtFE8(`-m HtFE-img-8`), 20 clients, Dir α=0.1, join ratio 1.0, 500R, local epoch 1, SGD lr 0.01, `-fd 512`
 - 배치: CIFAR-100·Tiny 128, Flowers102 32. 증강 없음(`--fedsa_augment false`)
@@ -48,7 +48,6 @@ CIFAR-100, Flowers102, Tiny-ImageNet × seed 0~2. 한 run에서 세 값을 모�
 |---|---|---|---|
 | HtFL (원래 모델만) | LG-FedAvg, FedGH, FedProto, FedTGP, FedSA(λ 조정), FedRG | 원래 모델만 | 3 데이터셋 측정 완료 |
 | 하한 | **Local** | 원래 모델만 | **아직 없음, 최우선** (C1 핵심) |
-| 앵커 정교화 | FedDSA(이중 앵커) | 원래 모델만 | 기존 결과 재사용, 설정 확인 필요 |
 | 공유 모델 계열 | FedAPEN(원본, `--global_arch c20`) | 함께 배포 | 실행 중 |
 | 공유 모델 계열 | FedAPEN + 개인 head(`--apen_personal_head true`) | 함께 배포 | CIFAR s0만 있음 → 3×3 |
 | 공유 모델 계열 | FedMRL(`--global_arch c20`) | 함께 배포 | 실행 중 |
@@ -74,14 +73,14 @@ seed 1개로 할 보조 항목(부록): lr ×2/×4, weight decay, BN 로컬, 쌍
 
 ## 5. 일반화 (CIFAR-100, 500R)
 
-FedDSA 논문의 표 1·3과 같은 설정이라 HtFL 기준선 수치를 재사용한다. 단 FedSA 행은 λ=10이라 다시 측정해야 한다.
+예전 원고(reference/main.pdf) 표 1·3과 같은 설정이라 그 HtFL 기준선 수치를 재사용한다. 단 FedSA 행은 λ=10이라 다시 측정해야 한다.
 
 | 실험 | 설정 | 우리 run | 기준선 |
 |---|---|---|---|
-| 모델 이질성 | HtFE2/3/4/5/9 (`-m HtFE-img-X`) | 5 × 3 seed | FedDSA 논문 표 1 재사용 + FedSA·Local·FedAPEN-ph 새로 |
+| 모델 이질성 | HtFE2/3/4/5/9 (`-m HtFE-img-X`) | 5 × 3 seed | 예전 원고 표 1 재사용 + FedSA·Local·FedAPEN-ph 새로 |
 | 저사양 비중 (IoT) | `HtFE-img-lowend` | 3 seed | 새로: Local, FedTGP, FedSA, FedAPEN-ph |
-| 클라이언트 수 | 50/100명, join 0.5, 배치 32 | 2 × 3 seed | FedDSA 논문 표 1 재사용 |
-| 로컬 에폭 | E = 2/5/10 | 3 × 3 seed | FedDSA 논문 표 3 재사용 |
+| 클라이언트 수 | 50/100명, join 0.5, 배치 32 | 2 × 3 seed | 예전 원고 표 1 재사용 |
+| 로컬 에폭 | E = 2/5/10 | 3 × 3 seed | 예전 원고 표 3 재사용 |
 | label skew 강도 | Dir α = 0.3, 1.0 | 2 × 3 seed | 새로: Local, FedTGP, FedSA, FedAPEN-ph |
 
 E=10은 라운드당 시간이 10배라 seed 1개로 먼저 본다. 게이트 patience는 라운드 단위라 E가 크면 학습량 기준으로 길어진다는 점을 본문에 밝힌다.
@@ -91,7 +90,6 @@ E=10은 라운드당 시간이 10배라 seed 1개로 먼저 본다. 게이트 pa
 | 진단 | 근거 run | 남은 일 |
 |---|---|---|
 | F1 구조 간 채널 = Local | 기준선 표 + Local | Local 500R |
-| F1 보강: 앵커 기하는 건강한데 정확도는 그대로 | FedDSA 표 4·5 (effective rank, spectral ratio) | 문장으로 연결 |
 | F2 같은 구조 평균만 지식 전달 | 평균 vs 비평균 쌍둥이 (+11) | 500R seed 3개 (4절) |
 | F3 head 평균 붕괴, label prior 원인 | H3 실험 (BSM으로 17 → 55.7) | 완료 |
 | F4 쌍둥이 암기 (train−held-out 차이) | TwinGate 로그 | 그림 |
