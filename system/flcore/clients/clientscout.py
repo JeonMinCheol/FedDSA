@@ -36,8 +36,6 @@ class clientScout(Client):
         self.residual = args.scout_residual  # p2: learner only through the sum; i1: + standalone CE + KL to the scout
         self.screen_tau = float(args.scout_screen_tau)
         self.cache = bool(args.scout_cache)
-        self.recover = bool(args.scout_recover)
-        self.recover_temp = float(args.scout_recover_temp)
         self.frozen = False  # backbone frozen by the server's gate
         self.head_frozen = False  # personal projector/head fixed too (--scout_freeze_head)
         self._split = None
@@ -76,7 +74,6 @@ class clientScout(Client):
         opt_s = torch.optim.SGD(params_s, lr=self.learning_rate * self.lr_scale, weight_decay=self.wd) if params_s else None
         opt = torch.optim.SGD(model.parameters(), lr=self.learning_rate)
         teacher = copy.deepcopy(sc).eval().requires_grad_(False)  # the received scout, before it fits my data
-        recovering = self.recover and self.frozen
         if self.cache and self.frozen and not self.augment:  # cached features are only valid for unaugmented inputs
             trainloader = self._cached_loader(sc)
         model.train()
@@ -91,7 +88,7 @@ class clientScout(Client):
                 with torch.no_grad():
                     t_logits = teacher.head(teacher.base(x) if f is None else teacher.base[1:](f)).float()
                 keep = None
-                if self.screen_tau > 0 and not recovering:
+                if self.screen_tau > 0:
                     # scout screening: skip samples the received scout already gets right with confidence
                     p_y = t_logits.softmax(1).gather(1, y[:, None]).squeeze(1)
                     keep = p_y < self.screen_tau
@@ -101,10 +98,9 @@ class clientScout(Client):
                 out_priv = model(xp)
                 out = out_priv + tp  # residual: the learner fixes what the frozen received scout gets wrong
                 loss = self.loss(out, yp)
-                if self.residual == "i1" or recovering:  # standalone use of the learner: own CE + KD from the scout
-                    T = self.recover_temp if recovering else 1.0
-                    loss = loss + self.loss(out_priv, yp) + T * T * F.kl_div(
-                        F.log_softmax(out_priv.float() / T, 1), F.softmax(tp / T, 1), reduction="batchmean")
+                if self.residual == "i1":  # learner also usable alone: its own CE + KD from the scout
+                    loss = loss + self.loss(out_priv, yp) + F.kl_div(
+                        F.log_softmax(out_priv.float(), 1), F.softmax(tp, 1), reduction="batchmean")
                 if not fixed:  # the scout trains on its own CE
                     loss = loss + self.loss(sc.head(sc.base(x) if f is None else sc.base[1:](f)), y)
                 opt.zero_grad(set_to_none=True)

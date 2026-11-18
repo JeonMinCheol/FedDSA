@@ -837,9 +837,6 @@ if __name__ == "__main__":
                         help="FedScout: the learner trains only on samples where the received scout's p(y) < tau (0 = off)")
     parser.add_argument('--scout_cascade_taus', type=str, default="0.5,0.7,0.9",
                         help="FedScout: evaluated inference cascades (learner only where the scout's top-1 prob < tau)")
-    parser.add_argument('--scout_recover', type=str2bool, nargs='?', const=True, default=False,
-                        help="FedScout: after the freeze, also train the learner standalone (CE + KD from the scout)")
-    parser.add_argument('--scout_recover_temp', type=float, default=1.0, help="FedScout: KD temperature of the recovery")
     parser.add_argument('--pfedmoe_shared_lr_scale', type=float, default=1.0, help="pFedMoE: lr multiplier of the shared extractor (paper uses 1; fairness control)")
     parser.add_argument('--pfedmoe_gate_hidden', type=int, default=128, help="pFedMoE: hidden width of the gating network (not reported in the paper)")
     parser.add_argument('--apen_shared_lr_scale', type=float, default=1.0,
