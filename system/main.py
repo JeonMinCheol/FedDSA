@@ -326,7 +326,9 @@ def run(args):
                                  "mnv2": 'mobilenet_v2(pretrained=False, num_classes=args.num_classes)',
                                  "r18": 'torchvision.models.resnet18(pretrained=False, num_classes=args.num_classes)',
                                  "sres": 'WidthSenResNet(args.sen_shape, args.num_classes)',
-                                 "c20": 'CIFARResNet(20, num_classes=args.num_classes)'}[args.global_arch]
+                                 }.get(args.global_arch)
+            if args.global_arch[0] == "c" and args.global_arch[1:].isdigit():  # c<depth>: same CIFAR ResNet as our twin
+                args.global_model = f'CIFARResNet({int(args.global_arch[1:])}, num_classes=args.num_classes)'
 
         for model in args.models:
             print(model)
@@ -686,8 +688,9 @@ if __name__ == "__main__":
     parser.add_argument('--fedsa_kernel_bank', type=int, default=0, help="FedSA: M>0 builds every backbone conv from M shared bank kernels per kernel size (bank FedAvg'd across architectures)")
     parser.add_argument('--fedsa_bank_chunk', type=int, default=16, help="FedSA kernel bank: chunk size B (B x B x k x k)")
     parser.add_argument('--fedsa_bank_private', type=str2bool, nargs='?', const=True, default=False, help="FedSA kernel bank control: never average the bank (capacity-only effect)")
-    parser.add_argument('--global_arch', type=str, default="", choices=["", "cnn", "mnv2", "r18", "sres", "c20"], help="shared/global model for FML, FedKD etc.")
-    parser.add_argument('--fedsa_common_arch', type=str, default="cnn", choices=["cnn", "bn", "r18", "mnv2", "gnet", "sres", "c20", "c56"], help="FedSA common model: cnn = FedAvgCNN, bn = SmallBNCNN (inversion), r18 = ResNet18 averaged twin, mnv2 = MobileNetV2, gnet = GoogLeNet")
+    parser.add_argument('--global_arch', type=str, default="", choices=["", "cnn", "mnv2", "r18", "sres", "c8", "c14", "c20", "c56"], help="shared/global model for FML, FedKD, FedAPEN, FedMRL (c<depth> = CIFAR ResNet, match the twin)")
+    parser.add_argument('--fedsa_common_arch', type=str, default="cnn", choices=["cnn", "bn", "r18", "mnv2", "gnet", "sres", "c8", "c14", "c20", "c32", "c56"], help="FedSA common model: cnn = FedAvgCNN, bn = SmallBNCNN (inversion), r18 = ResNet18 averaged twin, mnv2 = MobileNetV2, gnet = GoogLeNet, c<depth> = CIFAR ResNet-depth")
+    parser.add_argument('--fedsa_cm_width', type=float, default=1.0, help="channel multiplier of a c<depth> twin (twin-size study; ignored with --fedsa_cm_widths)")
     parser.add_argument('--fedsa_cm_private', type=str2bool, nargs='?', const=True, default=False, help="control: never average the common model (inversion then carries only local knowledge)")
     parser.add_argument('--fedsa_cm_invert', type=float, default=0.0, help="FedSA: weight of private-model loss on inputs synthesized by inverting the FedAvg'd common model")
     parser.add_argument('--fedsa_inv_n', type=int, default=256, help="synthetic inputs per client per round")
@@ -812,6 +815,23 @@ if __name__ == "__main__":
                         help="FedSA twin: server step on the averaged backbone update, prev + lr * (avg - prev)")
     parser.add_argument('--fedsa_cm_agree', type=float, default=0.0,
                         help="FedSA twin: average only coordinates whose weighted client sign agreement is >= this (0 = off)")
+    parser.add_argument('--fedsa_cm_realign', type=int, default=0,
+                        help="FedSA twin: epochs of personal projector/head training on the received averaged backbone (frozen) right after averaging, before evaluation and local training")
+    parser.add_argument('--fedsa_cm_bn_local', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedSA twin: do not average BN running statistics (FedBN-style, kept per client)")
+    parser.add_argument('--fedsa_cm_freeze_head', type=str2bool, nargs='?', const=True, default=False, help="at the gate's freeze also refit (realign) and then fix the twin's personal projector/head: the twin stops changing entirely")
+    parser.add_argument('--fedsa_cm_freeze_at', type=int, default=0, help="force the gate's freeze at this round (fixed-round control; needs --fedsa_cm_gate > 0)")
+    parser.add_argument('--fedsa_recover', type=str2bool, nargs='?', const=True, default=False, help="after the gate freezes the twin, add the private model's standalone CE + KL to the frozen twin (makes it usable alone)")
+    parser.add_argument('--fedsa_recover_teacher', type=str, default="twin", choices=["twin", "fused"], help="KD target of the post-freeze recovery: the frozen twin, or the ensemble (twin + alpha * private) at freeze time")
+    parser.add_argument('--fedsa_priv_gate', type=float, default=0.0, help="twin-gated private training: the private residual trains only on samples where the received twin's p(y) is below this (0 = off)")
+    parser.add_argument('--fedsa_cm_cache', type=str2bool, nargs='?', const=True, default=False,
+                        help="after the gate freezes the twin backbone, cache its features of my training data once and skip the backbone (exact: eval BN, no augmentation)")
+    parser.add_argument('--fedsa_dump_from', type=int, default=0,
+                        help="FedSA twin: from this round on, save twin/private logits on held-out and test per client at each evaluation to logs/dump_<goal>/ (0 = off)")
+    parser.add_argument('--fedsa_cm_realign_before', type=str2bool, nargs='?', const=True, default=False,
+                        help="control for --fedsa_cm_realign: run the same head epochs on the client's own backbone BEFORE the average replaces it (extra head training, no alignment)")
+    parser.add_argument('--fedsa_cm_bsm', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedSA twin: balanced softmax CE (logits + log local class prior) so the twin stays prior-free and the private residual takes the local prior (FedRoD-style role split)")
     parser.add_argument('--fedsa_cm_lr_scale', type=float, default=1.0,
                         help="FedSA twin: multiply the twin's local learning rate (control for 'anchors only enlarge the step')")
     parser.add_argument('--fedsa_cm_from_priv', type=float, default=0.0,
@@ -851,6 +871,7 @@ if __name__ == "__main__":
     cuda_available = torch.cuda.is_available() and torch.cuda.device_count() > 0
     if cuda_available:
         torch.cuda.manual_seed_all(args.random_seed)
+        torch.backends.cudnn.benchmark = True  # fixed 32x32 inputs: ~7% faster per client step on 2080 Ti (measured)
 
     if args.device == "cuda" and not cuda_available:
         print("\ncuda is not avaiable.\n")

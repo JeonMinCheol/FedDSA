@@ -7,7 +7,7 @@ import torch.nn as nn
 from mmcv.cnn import build_norm_layer
 
 from flcore.clients.clientbase import load_item, save_item
-from flcore.clients.clientsa import clientSA
+from flcore.clients.clientsa import FUSE_ALPHAS, clientSA
 from flcore.servers.serverbase import Server
 from utils.feddsa_utils import simplex_anchor_bank
 
@@ -117,9 +117,10 @@ class FedSA(Server):
                              "mnv2": 'mobilenet_v2(pretrained=False, num_classes=args.num_classes)',
                              "gnet": 'torchvision.models.googlenet(pretrained=False, aux_logits=False, num_classes=args.num_classes)',
                              "sres": 'WidthSenResNet(args.sen_shape, args.num_classes)',
-                             "c20": 'CIFARResNet(20, num_classes=args.num_classes)',
-                             "c56": 'CIFARResNet(56, num_classes=args.num_classes)'}.get(
-                arch, 'FedAvgCNN(in_features=3, num_classes=args.num_classes, dim=args.fedavg_cnn_dim)')]
+                             }.get(arch, 'FedAvgCNN(in_features=3, num_classes=args.num_classes, dim=args.fedavg_cnn_dim)')]
+            cifar = arch[0] == "c" and arch[1:].isdigit()  # c<depth>: CIFAR ResNet-depth twin, channels x --fedsa_cm_width
+            if cifar:
+                cargs.models = [f'CIFARResNet({int(arch[1:])}, width={float(getattr(args, "fedsa_cm_width", 1.0))}, num_classes=args.num_classes)']
             cargs.fedsa_projector = "linear"
             widths = getattr(args, "fedsa_cm_widths", "")
             if widths:
@@ -127,7 +128,7 @@ class FedSA(Server):
                 ws = [float(w) for w in widths.split(",")]
                 if arch == "sres":
                     spec = lambda r: [f'WidthSenResNet(args.sen_shape, args.num_classes, width={r})']
-                elif arch in ("c20", "c56"):
+                elif cifar:
                     spec = lambda r: [f'CIFARResNet({int(arch[1:])}, width={r}, num_classes=args.num_classes)']
                 else:
                     spec = lambda r: [f'WidthResNet18(width={r}, num_classes=args.num_classes)']
@@ -255,6 +256,7 @@ class FedSA(Server):
             f"global_gap={summary.get('global_gap', 0.0):.4f}"
             + (f" view_shift_norm={summary['view_shift_norm']:.4f} view_noise_norm={summary['view_noise_norm']:.4f}"
                if "view_shift_norm" in summary else "")
+            + (f" priv_frac={summary['priv_frac']:.4f}" if "priv_frac" in summary else "")
             + "".join(f" {k}={summary[k]:.4f}" for k in ("train_acc", "cm_train_acc", "cm_from_priv_kl", "teacher_train_acc", "syn_teacher_acc", "syn_recv_acc", "memref_w", "faa_adv_acc", "faa_delta", "t_copy", "t_inv", "t_post", "syn_keep", "vgen_rec", "vgen_acc", "vgen_delta") if k in summary)
         )
         if round_num % self.eval_gap == 0:
@@ -325,6 +327,27 @@ class FedSA(Server):
             print(f"Common model (twin) test accuracy: {cm_correct / cm_samples:.4f}")
             if fused_tot:
                 print("Fused (private+twin) test accuracy " + " ".join(f"{k}={v / cm_samples:.4f}" for k, v in fused_tot.items()))
+            alphas = [c.alpha_choice for c in self.clients if hasattr(c, "alpha_choice")]
+            if alphas:
+                print(f"FusedAlpha heldout mean={sum(alphas) / len(alphas):.3f} "
+                      + " ".join(f"n{a:g}={alphas.count(a)}" for a in sorted(set(alphas)))
+                      + " per_client=" + ",".join(f"{c.id}:{c.alpha_choice:g}" for c in self.clients if hasattr(c, "alpha_choice")))
+            hcs = [c for c in self.clients if hasattr(c, "heldout_counts")]
+            if hcs:  # one shared alpha from all clients' held-out correct counts (clients send 6 integers)
+                pooled = [sum(c.heldout_counts[i] for c in hcs) for i in range(len(FUSE_ALPHAS))]
+                pa = FUSE_ALPHAS[pooled.index(max(pooled))]  # first max -> smaller alpha on ties
+                pn = [sum(c.heldout_nll[i] for c in hcs) for i in range(len(FUSE_ALPHAS))]
+                pna = FUSE_ALPHAS[pn.index(min(pn))]
+                # per client: id:held-out n|held-out correct|test correct|held-out NLL|held-out masked correct|test masked
+                # correct (each per alpha) -> any selection rule offline
+                print(f"FusedAlphaCounts pooled_choice={pa:g} a_pooled={fused_tot[f'a{pa:g}'] / cm_samples:.4f} "
+                      f"pooled_nll_choice={pna:g} a_pooled_nll={fused_tot[f'a{pna:g}'] / cm_samples:.4f} "
+                      f"n_test={cm_samples} alphas=" + ",".join(f"{a:g}" for a in FUSE_ALPHAS)
+                      + " per_client=" + ";".join(
+                          f"{c.id}:{c.heldout_n}|" + ",".join(map(str, c.heldout_counts)) + "|"
+                          + ",".join(str(c.fused_correct[f"a{a:g}"]) for a in FUSE_ALPHAS) + "|"
+                          + ",".join(f"{v:.1f}" for v in c.heldout_nll) + "|" + ",".join(map(str, c.heldout_mask)) + "|"
+                          + ",".join(str(c.fused_correct[f"m{a:g}"]) for a in FUSE_ALPHAS) for c in hcs))
         if mem_aucs:
             print("MemProbe membership AUC " + " ".join(f"{k}={sum(v) / len(v):.4f}" for k, v in mem_aucs.items()))
         if anchor_eval_samples > 0:
@@ -433,15 +456,27 @@ class FedSA(Server):
             rho, mcos, norm = twin_coherence(states, self._cm_prev)
             print(f"[Round {rnd}] TwinCoherence rho={rho:.4f} mean_cos={mcos:.4f} update_rms={norm:.4f}")
         base_only = getattr(self.args, "fedsa_cm_base_only", False)  # twin: average the backbone, keep projector/head personal
+        bn_local = getattr(self.args, "fedsa_cm_bn_local", False)  # FedBN: BN running statistics stay per client
         avg = {k: (sum(w * st[k].float().to(self.device) for st, w in states).to(v.dtype) if v.is_floating_point()
-                   else v.clone()) for k, v in states[0][0].items() if not base_only or k.startswith("base.0.")}
+                   else v.clone()) for k, v in states[0][0].items() if (not base_only or k.startswith("base.0."))
+               and not (bn_local and ("running_" in k or "num_batches" in k))}
         server_lr, agree = float(getattr(self.args, "fedsa_cm_server_lr", 1.0)), float(getattr(self.args, "fedsa_cm_agree", 0.0))
         if (server_lr != 1.0 or agree > 0) and getattr(self, "_cm_prev", None) is not None:
             kept = twin_step(states, avg, self._cm_prev, server_lr, agree)
             if agree > 0:
                 print(f"[Round {rnd}] TwinAgree kept={kept:.4f}")
+        realign = int(getattr(self.args, "fedsa_cm_realign", 0))
+        before = getattr(self.args, "fedsa_cm_realign_before", False)
+        if realign > 0 and base_only and before:  # compute-matched control: same head epochs on my own local backbone
+            with torch.enable_grad():
+                for c in self.clients:
+                    c.realign_twin_head(realign)
         for c in self.clients:
             c.common_model.load_state_dict(avg, strict=not base_only)
+        if realign > 0 and base_only and not before:
+            with torch.enable_grad():
+                for c in self.clients:
+                    c.realign_twin_head(realign)
         self._cm_prev = {k: v.double().cpu().flatten() for k, v in avg.items()  # start point of next round's updates
                          if k.startswith("base.0.") and v.is_floating_point() and "running_" not in k}
 
@@ -461,15 +496,21 @@ class FedSA(Server):
         if val > getattr(self, "_gate_best", -1.0):
             src = self.clients[0].common_model if getattr(self, "cm_global", None) is None else self.cm_global
             self._gate_best, self._gate_round = val, rnd
-            nested = getattr(self, "cm_global", None) is not None  # nested: BN stats are local, the global copy has none
+            # nested / bn_local: BN statistics are local (client 0's must not be restored to everyone)
+            nested = getattr(self, "cm_global", None) is not None or getattr(self.args, "fedsa_cm_bn_local", False)
             self._gate_state = {k: v.detach().cpu().clone() for k, v in src.state_dict().items()
-                                if k.startswith("base.0.") and not (nested and "running_" in k)}
-        elif rnd - self._gate_round >= int(self.args.fedsa_cm_gate):
+                                if k.startswith("base.0.") and not (nested and ("running_" in k or "num_batches" in k))}
+        freeze_at = int(getattr(self.args, "fedsa_cm_freeze_at", 0))  # control: freeze at a fixed round instead of on a plateau
+        if rnd - self._gate_round >= int(self.args.fedsa_cm_gate) or 0 < freeze_at <= rnd:
             for c in self.clients:
                 own = c.common_model.state_dict()
                 c.common_model.load_state_dict({k: _lead(v, own[k]).to(own[k].device, own[k].dtype)
                                                 for k, v in self._gate_state.items()}, strict=False)
                 c.cm_frozen = True
+                if getattr(self.args, "fedsa_cm_freeze_head", False):
+                    with torch.enable_grad():  # refit my personal head to the restored backbone once, then fix it too
+                        c.realign_twin_head(max(1, int(getattr(self.args, "fedsa_cm_realign", 0))))
+                    c.cm_head_frozen = True
             self._cm_frozen = True
             print(f"[Round {rnd}] TwinGate freeze: restored the round-{self._gate_round} backbone (held-out {self._gate_best:.4f})")
 

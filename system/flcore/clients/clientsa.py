@@ -1,4 +1,5 @@
 import copy
+import os
 import time
 from collections import defaultdict
 
@@ -27,6 +28,15 @@ def fix_head(head, seed=12345):
             head.bias.zero_()
     head.requires_grad_(False)
     head._fixed = True
+
+
+FUSE_ALPHAS = (0.0, 0.1, 0.25, 0.5, 0.75, 1.0)  # private-logit weights evaluated at test time (ascending: ties -> smaller)
+
+
+def cd_fuse(lt, lp, a, rel=0.1):
+    """twin + a*private on the twin's plausible classes only (p >= rel * max p), others -inf (contrastive-decoding mask)."""
+    p = F.softmax(lt, 1)
+    return torch.where(p >= rel * p.amax(1, keepdim=True), lt + a * lp, torch.full_like(lt, float("-inf")))
 
 
 def ntd_loss(student, teacher, y):
@@ -61,6 +71,9 @@ class clientSA(Client):
         self.gap_scale = float(getattr(args, "fedsa_gap_scale", 1.0))
         self.frozen_head = getattr(args, "fedsa_frozen_head", "none")
         self.cm_ntd = float(getattr(args, "fedsa_cm_ntd", 0.0))
+        self.cm_bsm = bool(getattr(args, "fedsa_cm_bsm", False))
+        self.dump_from = int(getattr(args, "fedsa_dump_from", 0))
+        self.dump_dir = f"logs/dump_{getattr(args, 'goal', 'run')}"
         self.cm_from_priv = float(getattr(args, "fedsa_cm_from_priv", 0.0))
         self.cm_lr_scale = float(getattr(args, "fedsa_cm_lr_scale", 1.0))
         self.res_sum_loss = bool(getattr(args, "fedsa_res_sum_loss", True))
@@ -100,7 +113,14 @@ class clientSA(Client):
         self.cm_wd = float(getattr(args, "fedsa_cm_wd", 0.0))
         self.cm_val = float(getattr(args, "fedsa_cm_val", 0.0))
         self.cm_frozen = False
+        self.cm_head_frozen = False  # set by the server's gate with --fedsa_cm_freeze_head (whole twin fixed)
         self._split = None
+        self.cm_cache = bool(getattr(args, "fedsa_cm_cache", False))
+        self.priv_gate = float(getattr(args, "fedsa_priv_gate", 0.0))  # twin-gated private training (0 = off)
+        self.recover = bool(getattr(args, "fedsa_recover", False))  # after the freeze, train the private model standalone too
+        self.recover_teacher = getattr(args, "fedsa_recover_teacher", "twin")  # twin | fused (KD target during recovery)
+        self._kd_cache = None
+        self._feat_cache = None
         if self.kd_mix > 0:
             self.kd_weight = self.kd_mix
         self._teacher = None
@@ -283,14 +303,17 @@ class clientSA(Client):
         optimizer = torch.optim.SGD(params, lr=self.learning_rate,
                                     weight_decay=float(getattr(self, 'weight_decay', 0.0)))
         cm = self.common_model
+        optimizer_c, twin_fixed = None, False
         if cm is not None:
             cm.to(self.device).train()
-            for p in cm.base[0].parameters():
-                p.requires_grad_(not self.cm_frozen)
+            twin_fixed = self.cm_frozen and self.cm_head_frozen  # backbone frozen by the gate, personal head too
+            for n, p in cm.named_parameters():
+                p.requires_grad_(not (self.cm_frozen if n.startswith("base.0.") else twin_fixed))
             if self.cm_frozen:
                 cm.base[0].eval()  # frozen backbone also keeps its BN statistics
-            optimizer_c = torch.optim.SGD([p for p in cm.parameters() if p.requires_grad], lr=self.learning_rate * self.cm_lr_scale,
-                                          weight_decay=self.cm_wd)
+            params_c = [p for p in cm.parameters() if p.requires_grad]
+            optimizer_c = torch.optim.SGD(params_c, lr=self.learning_rate * self.cm_lr_scale,
+                                          weight_decay=self.cm_wd) if params_c else None
             # snapshot of the FedAvg'd common model before it fits this client's data (has not memorized it)
             self._teacher = copy.deepcopy(cm).eval().requires_grad_(False) if self.kd_frozen else None
             self._syn = None
@@ -299,6 +322,42 @@ class clientSA(Client):
         if self.peer_invert > 0:
             self._syn = self.syn_in  # other clients' backbone inversions of my classes (set by the server)
             self.syn_out = None  # only rounds that synthesize send anything
+        if self.cm_cache and cm is not None and self.cm_frozen and not self.augment and self.mix == "off" and self.vgen is None:
+            # frozen backbone (eval BN) on unaugmented data: its features never change, so compute them once and
+            # skip the twin backbone (teacher and live copy) for the rest of training
+            if self._feat_cache is None:
+                sub = self._cm_split()[0]
+                with torch.no_grad():
+                    self._feat_cache = torch.cat([cm.base[0](self._move_input(xb, yb)[0]) for xb, yb in DataLoader(sub, 256)])
+                self._idx_ds = [(xb, yb, i) for i, (xb, yb) in enumerate(sub)]
+                ib = torch.arange(0, len(sub), max(1, len(sub) // 64))[:64]  # self-check: cache rows line up with samples
+                with torch.no_grad():
+                    live = cm.base[0](torch.stack([sub[i][0] for i in ib.tolist()]).to(self.device))
+                assert torch.allclose(live, self._feat_cache[ib.to(live.device)], atol=1e-4), "feature cache misaligned"
+                if self.recover and self.recover_teacher == "fused":
+                    # recovery target = the deployed ensemble at freeze time (frozen twin + alpha * residual private),
+                    # computed once: inputs, twin and this private snapshot are all fixed, so it costs no extra forwards
+                    a = float(getattr(self, "alpha_choice", 0.25))
+                    model.eval()
+                    with torch.no_grad():
+                        lt = self._teacher.head(self._teacher.base[1:](self._feat_cache)).float()
+                        lp = torch.cat([model(self._move_input(xb, yb)[0]).float() for xb, yb in DataLoader(sub, 256)])
+                        self._kd_cache = lt + a * lp
+                    model.train()
+                    print(f"[recover] client {self.id}: fused teacher alpha={a:g}, train acc of teacher "
+                          f"{float((self._kd_cache.argmax(1).cpu() == torch.as_tensor([int(yb) for _, yb in sub])).float().mean()):.3f}")
+            trainloader = DataLoader(self._idx_ds, self.batch_size, drop_last=True, shuffle=True,
+                                     pin_memory=str(self.device).startswith("cuda"))
+        if self.priv_gate > 0:  # the gate subsets the private batch; only the plain residual path supports that
+            assert self.residual and cm is not None and self.kd_frozen and self.kd_weight == 0 and self.cm_from_priv == 0 \
+                and not self.align_detach and self.backbone_view <= 0 and self.bottleneck == "off" and self.mix == "off" \
+                and self.memref <= 0 and self.relation_weight <= 0 and self.peer_head_weight <= 0 and self.second_view == "off" \
+                and self.deep_anchor <= 0 and self.anchor_mixup <= 0 and self.augmenter is None and self.vgen is None \
+                and self.pub_kd <= 0 and self.soft_label <= 0, "--fedsa_priv_gate supports only the plain residual config"
+        # post-freeze recovery: the twin no longer changes, so the remaining rounds give the residual private model its
+        # standalone CE + KL to the frozen twin (I1 terms) -> the device's own model becomes usable without the twin
+        recovering = self.recover and self.cm_frozen
+        assert not (recovering and self.recover_teacher == "fused" and not self.cm_cache), "fused recovery teacher needs --fedsa_cm_cache"
         grad_scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
         model.train()
 
@@ -323,8 +382,10 @@ class clientSA(Client):
 
         try:
             for _ in range(max_local_epochs):
-                for x, y in trainloader:
+                for x, y, *ix in trainloader:
                     x, y = self._move_input(x, y)
+                    f = self._feat_cache[ix[0].to(self._feat_cache.device)] if ix else None  # cached frozen-twin features
+                    kd_t = self._kd_cache[ix[0].to(self._kd_cache.device)] if (ix and recovering and self._kd_cache is not None) else None
                     if self.train_slow:
                         time.sleep(0.1 * abs(self.rng.rand()))
 
@@ -343,6 +404,20 @@ class clientSA(Client):
                         x, y_b, lam = mix_batch(x, y, self.mix)
                         mixed = (y_b, lam)
                     self._deep_cache.clear()
+                    xp, yp, keep = x, y, None
+                    if self.priv_gate > 0 and not recovering:
+                        # the cheap shared twin picks the samples the (expensive) private residual must see: where the twin
+                        # is already confident and right, CE(twin + private) gives the residual ~0 gradient, so skip it
+                        with torch.no_grad():
+                            src = cm if self.res_live else self._teacher
+                            gate_rep = (src.base(x) if f is None else src.base[1:](f)).float()
+                            gate_logits = src.head(gate_rep).float()
+                            p_y = gate_logits.softmax(1).gather(1, y[:, None]).squeeze(1)
+                            keep = p_y < self.priv_gate
+                            if int(keep.sum()) < 2:  # BatchNorm in train mode needs >= 2 samples
+                                keep[p_y.topk(2, largest=False).indices] = True
+                        xp, yp = x[keep], y[keep]
+                        metric_sums["priv_frac"] += float(keep.float().mean())
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
                         if self.align_detach:
                             # anchor losses train only the projector (base[-1]); backbone gets CE only
@@ -365,38 +440,41 @@ class clientSA(Client):
                             align_rep = rep + torch.randn_like(rep) * (0.5 * logvar).exp()
                             bottleneck_kl = self._bottleneck_kl(rep, logvar, y)
                         else:
-                            rep = model.base(x)
+                            rep = model.base(xp)
                             align_rep = rep
                         output = model.head(align_rep if self.bottleneck != "off" else rep)
                         out_priv = output  # the private model's own logits (before the residual sum)
                         if self.residual and cm is not None and self._teacher is not None:
                             src = cm if self.res_live else self._teacher
                             # shortcut: second base forward (also done in _mutual_distill_loss), cache it if this becomes the method
-                            with torch.no_grad():
-                                base_rep = src.base(x).float()
-                                base_logits = src.head(base_rep).float()
+                            if keep is not None:
+                                base_rep, base_logits = gate_rep[keep], gate_logits[keep]
+                            else:
+                                with torch.no_grad():
+                                    base_rep = (src.base(x) if f is None else src.base[1:](f)).float()
+                                    base_logits = src.head(base_rep).float()
                             if self.res_sum_loss:  # False: the private model trains on its own logits; the sum is used at test only
                                 output = output + base_logits
-                        task_loss = self.loss(output, y) if soft_targets is None else \
-                            -(soft_targets.index_select(0, y) * F.log_softmax(output.float(), dim=1)).sum(1).mean()
-                        anchors_loss, anchor_metrics = self.cal_anchors_loss(align_rep, model, y)
+                        task_loss = self.loss(output, yp) if soft_targets is None else \
+                            -(soft_targets.index_select(0, yp) * F.log_softmax(output.float(), dim=1)).sum(1).mean()
+                        anchors_loss, anchor_metrics = self.cal_anchors_loss(align_rep, model, yp)
                         anchors_loss = anchors_loss * self.priv_anchor  # 0: private model trained without anchors
                         if mixed is not None:
                             y_b, lam = mixed
                             task_loss = lam * task_loss + (1 - lam) * self.loss(output, y_b)
                             anchors_loss = lam * anchors_loss + (1 - lam) * self.cal_anchors_loss(align_rep, model, y_b)[0]
                         loss = ((1.0 - self.kd_mix) if (cm is not None and self.kd_mix > 0) else 1.0) * task_loss + anchors_loss
-                        if self.residual and self.res_standalone and cm is not None and self._teacher is not None:
-                            loss = loss + (self.loss(out_priv, y) if self.res_sum_loss else 0) + self.res_kl * F.kl_div(
-                                F.log_softmax(out_priv.float(), 1), F.softmax(base_logits, 1), reduction="batchmean")
+                        if self.residual and (self.res_standalone or recovering) and cm is not None and self._teacher is not None:
+                            loss = loss + (self.loss(out_priv, yp) if self.res_sum_loss else 0) + self.res_kl * F.kl_div(
+                                F.log_softmax(out_priv.float(), 1), F.softmax(base_logits if kd_t is None else kd_t, 1), reduction="batchmean")
                         if self.residual and cm is not None and self._teacher is not None:
                             # anchor-free supervision of the private representation, using the received twin as reference
                             if self.res_readout > 0:  # private features must be readable by the twin's (frozen) head
-                                loss = loss + self.res_readout * self.loss(self._teacher.head(rep), y)
+                                loss = loss + self.res_readout * self.loss(self._teacher.head(rep), yp)
                             if self.res_feat > 0:  # align with the non-memorizing twin's features, per sample
                                 loss = loss + self.res_feat * (1 - F.cosine_similarity(rep.float(), base_rep, dim=1)).mean()
                             if self.res_ce > 0:  # plain standalone CE (control; no KL)
-                                loss = loss + self.res_ce * self.loss(out_priv, y)
+                                loss = loss + self.res_ce * self.loss(out_priv, yp)
                         if self.augmenter is not None:
                             loss = loss + self.faa * self._faa_loss(model, x, y)
                         if self.vgen is not None and self.vgen_replace <= 0:
@@ -417,8 +495,8 @@ class clientSA(Client):
                                 loss = loss + self.deep_anchor * self.cal_anchors_loss(proj(f), model, y)[0]
                         if self.anchor_mixup > 0 and self.semantic_anchors is not None:
                             loss = loss + self._anchor_mixup_loss(rep, y, model)
-                        if cm is not None:
-                            loss = loss + self._mutual_distill_loss(rep, output, x, y, cm, out_priv)
+                        if cm is not None and not twin_fixed:
+                            loss = loss + self._mutual_distill_loss(rep, output, x, y, cm, out_priv, f)
                         if self._syn is not None:
                             loss = loss + (self.cm_invert or self.peer_invert) * self._synthetic_loss(model, x.shape[0])
                             self._kd_acc = {**(getattr(self, "_kd_acc", None) or {}), "syn_teacher_acc": self._syn_acc,
@@ -462,7 +540,7 @@ class clientSA(Client):
                                     + self.cal_anchors_loss(rep2, model, y)[0] + F.mse_loss(rep2.float(), rep.float())
 
                     with torch.no_grad():
-                        metric_sums["train_acc"] += float(output.argmax(dim=1).eq(y).float().mean())
+                        metric_sums["train_acc"] += float(output.argmax(dim=1).eq(yp).float().mean())
                         if getattr(self, "_kd_acc", None):  # memorization diagnostic: teacher / common-copy fit on local train data
                             for k, v in self._kd_acc.items():
                                 metric_sums[k] += v
@@ -476,12 +554,12 @@ class clientSA(Client):
                             )
                             proto_count = torch.zeros(self.num_classes, device=rep_detached.device, dtype=torch.float32)
                             proto_sq = torch.zeros_like(proto_sum)
-                        proto_sum.index_add_(0, y, rep_detached)
-                        proto_sq.index_add_(0, y, rep_detached.square())
-                        proto_count.index_add_(0, y, torch.ones_like(y, dtype=proto_count.dtype))
+                        proto_sum.index_add_(0, yp, rep_detached)
+                        proto_sq.index_add_(0, yp, rep_detached.square())
+                        proto_count.index_add_(0, yp, torch.ones_like(yp, dtype=proto_count.dtype))
 
                     optimizer.zero_grad(set_to_none=True)
-                    if cm is not None:
+                    if optimizer_c is not None:
                         optimizer_c.zero_grad(set_to_none=True)
                     if not torch.isfinite(loss):
                         continue
@@ -501,7 +579,7 @@ class clientSA(Client):
                     else:
                         loss.backward()
                         optimizer.step()
-                        if cm is not None:
+                        if optimizer_c is not None:
                             optimizer_c.step()
 
             if self.eval_protos:
@@ -688,6 +766,47 @@ class clientSA(Client):
         return self.loss(out, y) + self.cal_anchors_loss(rep, model, y)[0]
 
     @torch.no_grad()
+    def _dump_logits(self, cm, model):
+        """Twin/private logits on my held-out split and test set, for the offline per-sample router study."""
+        out = {}
+        for tag, loader in (("held", DataLoader(self._cm_split()[1], 256)), ("test", self.load_test_data())):
+            lt, lp, ys, ft = [], [], [], []
+            for x, y in loader:
+                x, y = self._move_input(x, y)
+                lt.append(cm(x).half().cpu())
+                lp.append(model(x).half().cpu())
+                ft.append(cm.base[0](x).flatten(1).half().cpu())  # shared twin backbone features: an input-level router signal
+                ys.append(y.cpu())
+            out[f"lt_{tag}"], out[f"lp_{tag}"], out[f"y_{tag}"] = torch.cat(lt), torch.cat(lp), torch.cat(ys)
+            out[f"ft_{tag}"] = torch.cat(ft)
+        os.makedirs(self.dump_dir, exist_ok=True)
+        torch.save(out, f"{self.dump_dir}/r{self.current_round}_c{self.id}.pt")
+
+    def realign_twin_head(self, epochs):
+        """After the averaged backbone arrives, fit my personal projector/head to it (backbone and its BN frozen):
+        otherwise the twin I evaluate and learn from is a new backbone under a head fitted to last round's local one."""
+        cm = self.common_model.to(self.device)
+        cm.train()
+        cm.base[0].eval()
+        opt = torch.optim.SGD([p for n, p in cm.named_parameters() if not n.startswith("base.0.")],
+                              lr=self.learning_rate * self.cm_lr_scale, weight_decay=self.cm_wd)
+        for _ in range(epochs):
+            for x, y in self.load_train_data():
+                x, y = self._move_input(x, y)
+                with torch.no_grad():
+                    f = cm.base[0](x)
+                out = cm.head(cm.base[1:](f)).float()
+                loss = self.loss(out + self._log_prior(out.device) if self.cm_bsm else out, y)
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+
+    @torch.no_grad()
+    def _log_prior(self, device):
+        """log of my training class counts (absent classes count as 1); constant offsets do not matter for softmax."""
+        return self.class_counts().clamp_min(1).log().to(device)
+
+    @torch.no_grad()
     def class_counts(self):
         if getattr(self, "_class_counts", None) is None:
             y = torch.cat([b.view(-1) for _, b in self._read_client_data_cached(is_train=True)])
@@ -853,16 +972,18 @@ class clientSA(Client):
         kd = F.kl_div(F.log_softmax(out.float() / T, 1), F.softmax(lt[idx].float() / T, 1), reduction="batchmean") * T * T
         return base + kd
 
-    def _mutual_distill_loss(self, rep, output, x, y, cm, out_priv=None):
+    def _mutual_distill_loss(self, rep, output, x, y, cm, out_priv=None, f=None):
         """Private model <-> shared small model (FedAvg'd by everyone, so it has seen all clients' data):
         both learn the task + the shared anchors, and distill each other on logits (and, by default, in the
         shared anchor space). Returns the sum of both models' extra losses."""
-        rep_c = cm.base(x)
+        rep_c = cm.base(x) if f is None else cm.base[1:](f)  # f: cached features of the frozen backbone
         out_c = cm.head(rep_c)
         T = self.kd_temp
         kl = lambda student, teacher: F.kl_div(F.log_softmax(student.float() / T, 1),
                                                F.softmax(teacher.detach().float() / T, 1), reduction="batchmean") * T * T
-        common_task = self.loss(out_c, y) + self.cm_anchor * self.cal_anchors_loss(rep_c, cm, y)[0]
+        # balanced softmax: the local prior is added only inside the loss, so the twin's own logits stay prior-free
+        common_task = self.loss(out_c + self._log_prior(out_c.device) if self.cm_bsm else out_c, y) \
+            + self.cm_anchor * self.cal_anchors_loss(rep_c, cm, y)[0]
         self._kd_acc = {"cm_train_acc": float(out_c.argmax(1).eq(y).float().mean())}
         if self.cm_from_priv > 0 and out_priv is not None:  # bidirectional (FML/FedAPEN): the twin also learns from the private model
             from_priv = F.kl_div(F.log_softmax(out_c.float(), 1), F.softmax(out_priv.detach().float(), 1), reduction="batchmean")
@@ -1182,10 +1303,42 @@ class clientSA(Client):
                 lp = model.head(rp).float()
                 fused["prob_avg"] += int((F.softmax(lp, 1) + F.softmax(lt, 1)).argmax(1).eq(y).sum())
                 fused["logit_sum"] += int((lp + lt).argmax(1).eq(y).sum())  # the residual-expert prediction
+                hits = torch.stack([(lt + a * lp).argmax(1).eq(y) for a in FUSE_ALPHAS])  # prediction = twin + alpha * private
+                for a, h in zip(FUSE_ALPHAS, hits):
+                    fused[f"a{a:g}"] += int(h.sum())
+                    fused[f"m{a:g}"] += int(cd_fuse(lt, lp, a).argmax(1).eq(y).sum())
+                # ceiling of any per-sample choice of alpha, twin/private disagreement, confidence (vs accuracy = overconfidence)
+                ct, cp = lt.argmax(1).eq(y), lp.argmax(1).eq(y)
+                fused["oracle_alpha"] += int(hits.any(0).sum())
+                fused["twin_prior"] += int((lt + self._log_prior(lt.device)).argmax(1).eq(y).sum())  # H3 control: prior, no private
+                fused["twin_only"] += int((ct & ~cp).sum())
+                fused["priv_only"] += int((cp & ~ct).sum())
+                fused["conf_twin"] += float(F.softmax(lt, 1).amax(1).sum())
+                fused["conf_priv"] += float(F.softmax(lp, 1).amax(1).sum())
                 if anchors is not None:  # same fixed anchor space for both architectures: average, nearest anchor
                     fused["rep_avg_anchor"] += int(torch.cdist((rp + rt) / 2, anchors).argmin(1).eq(y).sum())
                     fused["twin_anchor"] += int(torch.cdist(rt, anchors).argmin(1).eq(y).sum())
             n += y.numel()
+        if model is not None and getattr(self, "cm_val", 0.0) > 0:
+            # private weight chosen on my held-out split (the gate's, no test labels); ties -> the smaller alpha
+            hc, hn, hm = defaultdict(int), defaultdict(float), defaultdict(int)  # correct, NLL sum, masked correct
+            self.heldout_n = len(self._cm_split()[1])
+            for x, y in DataLoader(self._cm_split()[1], 256):
+                x, y = self._move_input(x, y)
+                lt, lp = cm(x).float(), model(x).float()
+                for a in FUSE_ALPHAS:
+                    z = lt + a * lp
+                    hc[a] += int(z.argmax(1).eq(y).sum())
+                    hn[a] += float(F.cross_entropy(z, y, reduction="sum"))
+                    hm[a] += int(cd_fuse(lt, lp, a).argmax(1).eq(y).sum())
+            # logged so other selection rules can be computed offline
+            self.heldout_counts, self.heldout_nll, self.heldout_mask = ([d[a] for a in FUSE_ALPHAS] for d in (hc, hn, hm))
+            self.alpha_choice = max(FUSE_ALPHAS, key=lambda a: hc[a])
+            fused["a_heldout"] = fused[f"a{self.alpha_choice:g}"]
+            fused["a_nll"] = fused[f"a{min(FUSE_ALPHAS, key=lambda a: hn[a]):g}"]  # NLL is smoother than accuracy on ~110 samples
+            fused["m_heldout"] = fused[f"m{max(FUSE_ALPHAS, key=lambda a: hm[a]):g}"]
+            if 0 < self.dump_from <= self.current_round:
+                self._dump_logits(cm, model)
         cm.train()
         if model is not None:
             model.train()
