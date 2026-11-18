@@ -119,6 +119,7 @@ class clientSA(Client):
         self.priv_gate = float(getattr(args, "fedsa_priv_gate", 0.0))  # twin-gated private training (0 = off)
         self.recover = bool(getattr(args, "fedsa_recover", False))  # after the freeze, train the private model standalone too
         self.recover_teacher = getattr(args, "fedsa_recover_teacher", "twin")  # twin | fused (KD target during recovery)
+        self.recover_temp = float(getattr(args, "fedsa_recover_temp", 1.0))
         self._kd_cache = None
         self._feat_cache = None
         if self.kd_mix > 0:
@@ -465,8 +466,10 @@ class clientSA(Client):
                             anchors_loss = lam * anchors_loss + (1 - lam) * self.cal_anchors_loss(align_rep, model, y_b)[0]
                         loss = ((1.0 - self.kd_mix) if (cm is not None and self.kd_mix > 0) else 1.0) * task_loss + anchors_loss
                         if self.residual and (self.res_standalone or recovering) and cm is not None and self._teacher is not None:
-                            loss = loss + (self.loss(out_priv, yp) if self.res_sum_loss else 0) + self.res_kl * F.kl_div(
-                                F.log_softmax(out_priv.float(), 1), F.softmax(base_logits if kd_t is None else kd_t, 1), reduction="batchmean")
+                            T = self.recover_temp if recovering else 1.0  # KD temperature (only for the post-freeze recovery)
+                            loss = loss + (self.loss(out_priv, yp) if self.res_sum_loss else 0) + self.res_kl * T * T * F.kl_div(
+                                F.log_softmax(out_priv.float() / T, 1), F.softmax((base_logits if kd_t is None else kd_t) / T, 1),
+                                reduction="batchmean")
                         if self.residual and cm is not None and self._teacher is not None:
                             # anchor-free supervision of the private representation, using the received twin as reference
                             if self.res_readout > 0:  # private features must be readable by the twin's (frozen) head

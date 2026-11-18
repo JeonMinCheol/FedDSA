@@ -196,6 +196,8 @@ class FedSA(Server):
             if int(getattr(self.args, "fedsa_cm_gate", 0)) > 0 and getattr(self.args, "fedsa_common_model", False) \
                     and not getattr(self.args, "fedsa_cm_private", False):
                 self.gate_common_model(i)
+            if int(getattr(self.args, "fedsa_save_at", 0)) == i > 0:
+                self.save_client_models(i)
             self.log_train_diagnostics(i)
 
             self.receive_protos()
@@ -479,6 +481,18 @@ class FedSA(Server):
                     c.realign_twin_head(realign)
         self._cm_prev = {k: v.double().cpu().flatten() for k, v in avg.items()  # start point of next round's updates
                          if k.startswith("base.0.") and v.is_floating_point() and "running_" not in k}
+
+    def save_client_models(self, rnd):
+        """Write every client's twin and private model to logs/ckpt_<goal>/ for offline probes (e.g. inversion transfer)."""
+        import copy
+        import os
+        d = f"logs/ckpt_{self.args.goal}"
+        os.makedirs(d, exist_ok=True)
+        for c in self.clients:
+            model = getattr(c, "model", None) or load_item(c.role, "model", c.save_folder_name)
+            torch.save({"round": rnd, "id": c.id, "twin": copy.deepcopy(c.common_model).cpu(),
+                        "private": copy.deepcopy(model).cpu()}, f"{d}/c{c.id}.pt")
+        print(f"[Round {rnd}] saved {len(self.clients)} client twins/private models to {d}")
 
     @torch.no_grad()
     def gate_common_model(self, rnd):

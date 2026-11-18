@@ -24,6 +24,8 @@ from flcore.servers.serverktl_stylegan_3 import FedKTL as FedKTL_stylegan_3
 from flcore.servers.serverktl_stable_diffusion import FedKTL as FedKTL_stable_diffusion
 from flcore.servers.servermrl import FedMRL
 from flcore.servers.serverapen import FedAPEN
+from flcore.servers.serverpfedmoe import PFedMoE
+from flcore.servers.serverscout import FedScout
 from flcore.trainmodel.input_utils import image_input_shape
 from flcore.servers.serversa import FedSA
 from flcore.servers.serveretfproto import ETFProtoFL
@@ -370,6 +372,12 @@ def run(args):
 
         elif args.algorithm == "FedAPEN":
             server = FedAPEN(args, i)
+
+        elif args.algorithm == "pFedMoE":
+            server = PFedMoE(args, i)
+
+        elif args.algorithm == "FedScout":
+            server = FedScout(args, i)
 
         elif args.algorithm == "FedKD":
             server = FedKD(args, i)
@@ -807,6 +815,33 @@ if __name__ == "__main__":
                         help="FedSA residual: train the private model on CE(private + frozen twin) (True) or on its own CE (False; sum only at test)")
     parser.add_argument('--fedsa_res_kl', type=float, default=1.0,
                         help="FedSA residual standalone term: weight of KL(private || frozen twin); 0 = no distillation")
+    parser.add_argument('--pfedmoe_gate_lr', type=float, default=0.01, help="pFedMoE: learning rate of the local gating network (paper grid 0.001-1)")
+    # FedScout (defaults = the final configuration)
+    parser.add_argument('--scout_arch', type=str, default="c20", help="FedScout: scout architecture, c<depth> = CIFAR ResNet")
+    parser.add_argument('--scout_width', type=float, default=1.0, help="FedScout: channel multiplier of the scout")
+    parser.add_argument('--scout_lr_scale', type=float, default=3.0, help="FedScout: scout lr = local lr x this")
+    parser.add_argument('--scout_wd', type=float, default=0.0, help="FedScout: scout weight decay")
+    parser.add_argument('--scout_val', type=float, default=0.05, help="FedScout: held-out fraction of local training data (gate, alpha)")
+    parser.add_argument('--scout_share', type=str, default="backbone", choices=["backbone", "all", "none"],
+                        help="FedScout: what of the scout is FedAvg'd (all = head too, none = no averaging; ablations)")
+    parser.add_argument('--scout_realign', type=int, default=1, help="FedScout: head-realignment epochs after each average (0 = off)")
+    parser.add_argument('--scout_gate', type=int, default=20, help="FedScout: memorization-gate patience in rounds (0 = never freeze)")
+    parser.add_argument('--scout_freeze_at', type=int, default=0, help="FedScout: force the freeze at this round (control)")
+    parser.add_argument('--scout_freeze_head', type=str2bool, nargs='?', const=True, default=True,
+                        help="FedScout: at the freeze, realign the personal head once and fix it (the scout stops changing)")
+    parser.add_argument('--scout_cache', type=str2bool, nargs='?', const=True, default=True,
+                        help="FedScout: after the freeze, cache the frozen backbone's features of the local training data")
+    parser.add_argument('--scout_residual', type=str, default="p2", choices=["p2", "i1"],
+                        help="FedScout: p2 = learner only through CE(scout + learner); i1 = + its own CE + KL to the scout")
+    parser.add_argument('--scout_screen_tau', type=float, default=0.5,
+                        help="FedScout: the learner trains only on samples where the received scout's p(y) < tau (0 = off)")
+    parser.add_argument('--scout_cascade_taus', type=str, default="0.5,0.7,0.9",
+                        help="FedScout: evaluated inference cascades (learner only where the scout's top-1 prob < tau)")
+    parser.add_argument('--scout_recover', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedScout: after the freeze, also train the learner standalone (CE + KD from the scout)")
+    parser.add_argument('--scout_recover_temp', type=float, default=1.0, help="FedScout: KD temperature of the recovery")
+    parser.add_argument('--pfedmoe_shared_lr_scale', type=float, default=1.0, help="pFedMoE: lr multiplier of the shared extractor (paper uses 1; fairness control)")
+    parser.add_argument('--pfedmoe_gate_hidden', type=int, default=128, help="pFedMoE: hidden width of the gating network (not reported in the paper)")
     parser.add_argument('--apen_shared_lr_scale', type=float, default=1.0,
                         help="FedAPEN: multiply the shared model's local learning rate")
     parser.add_argument('--apen_personal_head', type=str2bool, nargs='?', const=True, default=False,
@@ -822,6 +857,8 @@ if __name__ == "__main__":
     parser.add_argument('--fedsa_cm_freeze_head', type=str2bool, nargs='?', const=True, default=False, help="at the gate's freeze also refit (realign) and then fix the twin's personal projector/head: the twin stops changing entirely")
     parser.add_argument('--fedsa_cm_freeze_at', type=int, default=0, help="force the gate's freeze at this round (fixed-round control; needs --fedsa_cm_gate > 0)")
     parser.add_argument('--fedsa_recover', type=str2bool, nargs='?', const=True, default=False, help="after the gate freezes the twin, add the private model's standalone CE + KL to the frozen twin (makes it usable alone)")
+    parser.add_argument('--fedsa_save_at', type=int, default=0, help="save every client's twin and private model at this round (offline probes)")
+    parser.add_argument('--fedsa_recover_temp', type=float, default=1.0, help="KD temperature of the post-freeze recovery (loss scaled by T^2)")
     parser.add_argument('--fedsa_recover_teacher', type=str, default="twin", choices=["twin", "fused"], help="KD target of the post-freeze recovery: the frozen twin, or the ensemble (twin + alpha * private) at freeze time")
     parser.add_argument('--fedsa_priv_gate', type=float, default=0.0, help="twin-gated private training: the private residual trains only on samples where the received twin's p(y) is below this (0 = off)")
     parser.add_argument('--fedsa_cm_cache', type=str2bool, nargs='?', const=True, default=False,
@@ -857,6 +894,8 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
+    if args.algorithm == "FedScout":
+        args.fedsa_projector = "linear"  # residual learner = backbone -> Linear(-fd) -> head, like the scout
     if args.algorithm == "ETFProtoFL":
         # paper: projector output dim = number of classes, trainable projector after the backbone
         args.feature_dim = args.num_classes
