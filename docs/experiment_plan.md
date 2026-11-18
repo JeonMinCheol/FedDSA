@@ -46,7 +46,7 @@ CIFAR-100, Flowers102, Tiny-ImageNet × seed 0~2. 한 run에서 세 값을 모�
 ### 기준선 (다른 노드, 같은 프로토콜)
 | 묶음 | 방법 | 비교하는 배포 상황 | 상태 |
 |---|---|---|---|
-| HtFL (원래 모델만) | LG-FedAvg, FedGH, FedProto, FedTGP, FedSA(λ 조정), FedRG | 원래 모델만 | 3 데이터셋 측정 완료 |
+| HtFL (원래 모델만) | LG-FedAvg, FedGH, FedProto, FedTGP, FedSA(논문 공식 λ=1·MCL 1·CC 1 = 코드 기본값, 본 표 값은 이 설정으로 잰 것), FedRG | 원래 모델만 | 3 데이터셋 측정 완료 |
 | 하한 | **Local** | 원래 모델만 | **아직 없음, 최우선** (C1 핵심) |
 | 공유 모델 계열 | FedAPEN(원본, `--global_arch c20`) | 함께 배포 | 실행 중 |
 | 공유 모델 계열 | FedAPEN + 개인 head(`--apen_personal_head true`) | 함께 배포 | CIFAR s0만 있음 → 3×3 |
@@ -73,7 +73,7 @@ seed 1개로 할 보조 항목(부록): lr ×2/×4, weight decay, BN 로컬, 쌍
 
 ## 5. 일반화 (CIFAR-100, 500R)
 
-예전 원고(reference/main.pdf) 표 1·3과 같은 설정이라 그 HtFL 기준선 수치를 재사용한다. 단 FedSA 행은 λ=10이라 다시 측정해야 한다.
+예전 원고(reference/main.pdf) 표 1·3과 같은 설정이라 그 HtFL 기준선 수치를 재사용한다. 단 그 원고의 FedSA 행은 λ=10으로 잰 값이라 논문 공식값 λ=1(`-lam 1`)로 다시 측정해야 한다.
 
 | 실험 | 설정 | 우리 run | 기준선 |
 |---|---|---|---|
