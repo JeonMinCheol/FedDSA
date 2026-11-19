@@ -51,6 +51,8 @@ CMD=("${PYTHON_BIN}" -u main.py
   -go "${RUN}" -sfn "temp_${RUN}"
   "${DATA_ARGS[@]}" "${METHOD_ARGS[@]}")
 # GPU 하나에 run 3개를 같이 올릴 때만 MAX_PAR=2 (사용자 지시)
+# 클라이언트 수 실험(SERIAL, GPU에 run 하나)만 4 (사용자 지시 11-19). 묶음은 cuDNN 오류 이력 때문에 1 유지
+[[ -n "${SERIAL:-}" ]] && MAX_PAR=4
 [[ -n "${MAX_PAR:-}" ]] && CMD+=(--max_parallel_clients "${MAX_PAR}")
 
 mkdir -p logs
