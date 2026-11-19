@@ -142,3 +142,11 @@
 | nc100, jr 0.1 | 494929 | 494944 |
 
 - 순서: pFedMoE c8 본 표(494873~75)가 끝난 뒤에 실행된다.
+
+## 11-19 클라이언트 수 실험 (사용자 지시, `experiment_plan.md` 5절)
+- CIFAR-100, 500R, 배치 32, c8, seed 0~2. 방법: FedAPEN c8, FedMRL c8 (사용자 선택).
+- 설정: 50명 join 0.5 (`Cifar100_50`), 100명 join 0.5·0.3·0.1 (`Cifar100_100`). 예전 원고에는 0.3·0.1 값이 없다.
+- `submit_baselines.sbatch`에 `NC`, `JR`(기본 20, 1)과 데이터셋 `Cifar100_50`·`Cifar100_100`(-lbs 32)을 추가했다. NC가 데이터셋 이름과 다르면 바로 종료한다.
+- 순서: c8 본 표(FedAPEN·FedMRL) 다음, c20 FedMRL(부록) 앞.
+- **사용자 지시: 이 실험은 GPU에 run 하나씩.** smoke(494925)는 취소했다. `submit_baselines_pack.sbatch`에 `SERIAL=1`(같은 잡 안에서 seed 0→1→2 차례로)을 추가하고, (방법, 설정)마다 잡 하나로 냈다. 제출 잡 수 제한(20) 때문에 run마다 잡을 내지 않았다.
+- 잡: 494931~34 FedAPEN (50·0.5, 100·0.5, 100·0.3, 100·0.1), 494935~38 FedMRL (같은 순서). run 이름 `c8jr<참여율>_<방법>_Cifar100_<명>_s<seed>`.

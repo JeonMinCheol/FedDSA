@@ -22,10 +22,15 @@ export PYTHONPATH=stylegan/stylegan-utils
 GR="${GR:-500}"
 EG="${EG:-10}"
 GARCH="${GARCH:-c20}"   # 공유 모델 구조. 본 표는 c8 (docs/experiment_plan.md 11-19)
+NC="${NC:-20}"
+JR="${JR:-1}"
 RUN="${RUN:-${PREFIX:-base}_${METHOD}_${DATASET}_s${SEED}}"
 
 case "${DATASET}" in
   Cifar100)     DATA_ARGS=(-data Cifar100 -ncl 100 -lbs 128) ;;
+  # client-count experiment (experiment_plan 5): 50/100 clients, batch 32; set NC and JR to match
+  Cifar100_50|Cifar100_100) DATA_ARGS=(-data "${DATASET}" -ncl 100 -lbs 32)
+                [[ "${NC}" == "${DATASET#Cifar100_}" ]] || { echo "NC=${NC} does not match ${DATASET}" >&2; exit 2; } ;;
   Flowers102)   DATA_ARGS=(-data Flowers102 -ncl 102 -lbs 32) ;;
   TinyImagenet) DATA_ARGS=(-data TinyImagenet -ncl 200 -lbs 128) ;;
   *) echo "Invalid DATASET=${DATASET}" >&2; exit 2 ;;
@@ -41,7 +46,7 @@ case "${METHOD}" in
 esac
 
 CMD=("${PYTHON_BIN}" -u main.py
-  -did 0 -dev cuda -m HtFE-img-8 -fd 512 -lr 0.01 -gr "${GR}" -eg "${EG}" -ls 1 -jr 1 -nc 20
+  -did 0 -dev cuda -m HtFE-img-8 -fd 512 -lr 0.01 -gr "${GR}" -eg "${EG}" -ls 1 -jr "${JR}" -nc "${NC}"
   --use_amp false --pin_memory true --fedsa_augment false --random_seed "${SEED}"
   -go "${RUN}" -sfn "temp_${RUN}"
   "${DATA_ARGS[@]}" "${METHOD_ARGS[@]}")

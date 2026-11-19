@@ -20,17 +20,22 @@ N=${#SPECS[@]}
 PAR=""; (( N == 3 )) && PAR=2
 # FedMRL은 스레드 병렬에서 cuDNN 오류와 멈춤이 났다(docs/baselines_progress.md). PACK_PAR=1 로 덮어쓴다.
 PAR="${PACK_PAR:-${PAR}}"
-export TORCH_NUM_THREADS=$(( 8 / N ))
+# SERIAL=1: runs one after another on the GPU (100-client runs are too big to share a GPU)
+if [[ -n "${SERIAL:-}" ]]; then export TORCH_NUM_THREADS=8; else export TORCH_NUM_THREADS=$(( 8 / N )); fi
 echo "pack job=${SLURM_JOB_ID:-manual} host=$(hostname) n=${N} max_parallel_clients=${PAR:-default} torch_threads=${TORCH_NUM_THREADS}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader -i 0 2>/dev/null
 
 PIDS=()
+RC=0
 for spec in "${SPECS[@]}"; do
   IFS=: read -r M D S <<< "${spec}"
+  if [[ -n "${SERIAL:-}" ]]; then
+    METHOD="${M}" DATASET="${D}" SEED="${S}" MAX_PAR="${PAR}" bash submit_baselines.sbatch || RC=1
+    continue
+  fi
   METHOD="${M}" DATASET="${D}" SEED="${S}" MAX_PAR="${PAR}" bash submit_baselines.sbatch &
   PIDS+=($!)
   sleep 20   # 데이터 적재가 겹치지 않게
 done
-RC=0
-for p in "${PIDS[@]}"; do wait "${p}" || RC=1; done
+for p in ${PIDS[@]+"${PIDS[@]}"}; do wait "${p}" || RC=1; done
 exit "${RC}"
