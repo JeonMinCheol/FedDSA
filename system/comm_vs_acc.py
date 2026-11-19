@@ -9,6 +9,9 @@ point at its 500R total, from its per-round payload (d = 512 feature dim, C clas
   LG-FedAvg                 : up + down the head (C*d + C)
   FedRG                     : up k*d prototypes, down k*d aggregated representations
   FedAPEN                   : up + down the shared model (CIFARResNet-<depth> with a C-class fc)
+  pFedMoE                   : up + down the shared c8 extractor (no head), 78064 state floats like FedScout's count
+Curve baselines (pFedMoE) are seed TSVs (round, acc %) under docs/figs/data/, exported on the node that ran them:
+  python comm_vs_acc.py --export <run log> ../docs/figs/data/pfedmoe_c8_<dataset>_s<seed>.tsv
 usage: python comm_vs_acc.py [--out ../docs/figs/comm_vs_acc_draft.png]"""
 import argparse
 import glob
@@ -34,6 +37,9 @@ OURS = [  # label, log glob per dataset (seeds), color
                                  "Flowers102": "logs/m500_Flowers102_FedScoutSA_s[0-2].out"}, "#eb6834"),
     ("FedScout c8, share-all (seed 0)", "logs/c8late_{d}_s0.out", "#1baf7a"),
 ]
+CURVE_BASE = [  # label, seed TSV glob, per-round floats per client (up + down), color
+    ("pFedMoE (c8)", "../docs/figs/data/pfedmoe_c8_{d}_s[0-2].tsv", 2 * 78064, "#8a5cc7"),
+]
 
 
 def per_round_floats(method, d):
@@ -56,8 +62,14 @@ def curve(path):
     return [(r, a, comm.get(r - 1, 0.0)) for r, a in acc]
 
 
-def seed_mean(paths):
-    cs = [curve(p) for p in paths]
+def tsv_curve(path, floats):
+    """Same as curve() for a baseline: eval at round r comes after r rounds of the fixed per-round payload."""
+    rows = [line.split("\t") for line in open(path).read().splitlines() if line]
+    return [(int(r), float(a), int(r) * mb(floats)) for r, a in rows]
+
+
+def seed_mean(paths, load=curve):
+    cs = [load(p) for p in paths]
     n = min(len(c) for c in cs)
     if n == 0:
         return None
@@ -74,7 +86,15 @@ def best_within(a, m, budget):
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--out", default="../docs/figs/comm_vs_acc_draft.png")
+ap.add_argument("--export", nargs=2, metavar=("LOG", "TSV"), help="write a baseline log's (round, acc %%) curve and exit")
 args = ap.parse_args()
+if args.export:
+    txt = open(args.export[0]).read()
+    assert "Best accuracy." in txt, "run not finished"
+    pts = re.findall(r"Round number: (\d+)-+\n(?:.*\n)*?Averaged Test Accuracy: ([0-9.]+)", txt)
+    os.makedirs(os.path.dirname(args.export[1]) or ".", exist_ok=True)
+    open(args.export[1], "w").write("".join(f"{r}\t{100 * float(a):.2f}\n" for r, a in pts))
+    raise SystemExit(f"wrote {len(pts)} rounds to {args.export[1]}")
 os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
 fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
@@ -90,6 +110,14 @@ for j, (d, ax) in enumerate(zip(DATA, axes)):
             continue
         r, a, m, n = res
         ax.plot(m[1:], a[1:], color=color, lw=2, label=f"{label} (n={n})")  # round 0 has no comm (log axis)
+        rows.append((d, f"{label} (n={n}, R{r[-1]})", best_within(a, m, proto_budget), best_within(a, m, apen_budget),
+                     float(a.max()), float(m[-1])))
+    for label, pat, floats, color in CURVE_BASE:
+        paths = sorted(glob.glob(pat.format(d=d)))
+        if not paths:
+            continue
+        r, a, m, n = seed_mean(paths, lambda p: tsv_curve(p, floats))
+        ax.plot(m[1:], a[1:], color=color, lw=1.6, ls="--", label=f"{label} (n={n})")
         rows.append((d, f"{label} (n={n}, R{r[-1]})", best_within(a, m, proto_budget), best_within(a, m, apen_budget),
                      float(a.max()), float(m[-1])))
     pts = sorted(((mb(per_round_floats(name, d)) * ROUNDS, vals[j], name) for name, vals in BASE.items()), key=lambda t: t[1])
