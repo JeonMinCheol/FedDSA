@@ -63,7 +63,7 @@ CIFAR-100, Flowers102, Tiny-ImageNet × seed 0~2. 한 run에서 세 값을 모�
 | 하한 | **Local** | 원래 모델만 | **아직 없음, 최우선** (C1 핵심) |
 | 공유 모델 계열 | **FedAPEN 원본**(원 논문 방식, 공유 모델 구조만 우리 scout과 같은 c8, `-algo FedAPEN --global_arch c8`) | 함께 배포 | **c8로 3 데이터셋 × 3 seed 새로**(c20 결과 Flowers 68.53·Tiny 48.18은 부록) |
 | 공유 모델 계열 | **pFedMoE 원본**(원 논문: 두 extractor 같은 lr, gate lr은 논문 그리드 중 최선 1.0, `-algo pFedMoE --global_arch c8 --pfedmoe_gate_lr 1.0`) | 함께 배포 | c8로 3 데이터셋 × 3 seed(c8 smoke 통과) |
-| 공유 모델 계열 | FedMRL(`--global_arch c8`) | 함께 배포 | c8로 3 데이터셋 × 3 seed(c20 결과는 부록) |
+| 공유 모델 계열 | FedMRL(`--global_arch c8`) | 함께 배포 | c8로 3 데이터셋 × 3 seed (c20 묶음은 11-19 사용자 지시로 취소, 부록에서 빠짐) |
 
 **본 표의 기준선은 원 논문 방식 그대로 쓴다(11-19 사용자 결정).** 이기종 FL에 옮기면서 꼭 필요한 조정(공유 모델 구조를 우리 scout과 같은 크기, 즉 c8로: 모든 방법이 같은 용량을 공유)만 하고 논문에 밝힌다. c20으로 돌린 기준선 결과는 부록에 그대로 보고하고, 우리 c20 용량 ablation과 함께 둔다("기준선을 작은 모델로 약하게 만들었다"는 반론 대비). 우리 원칙을 붙인 변형은 본 표가 아니라 부록/분석 절에 둔다("우리 발견이 다른 방법에도 통한다", "기준선을 튜닝해도 우리가 이긴다"):
 - FedAPEN + 개인 head + 공유 lr×3(`--apen_personal_head true --apen_shared_lr_scale 3`, 다른 노드 실행 중)
