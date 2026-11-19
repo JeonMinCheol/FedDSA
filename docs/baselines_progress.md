@@ -126,3 +126,19 @@
 ## 11-19 역할 정리 (사용자)
 - ariel.khu.ac.kr은 기준선 성능 측정만 한다. FedAPEN 이득 원인(클래스 분포 보정 가설) 검증, apenph 같은 변형·ablation은 **163.180.117.63 담당**.
 - 이 노드는 c8 FedAPEN 로그에 찍히는 `APENDiag`/`APENDiagClient`(shared+prior 포함) 값을 결과 문서에 그대로 옮겨 넘기기만 한다. 해석과 추가 실험은 63에서.
+
+## 11-19 ariel(a2019102224): 클라이언트 수·참여율 실험, pFedMoE와 Local (CIFAR-100)
+- 설정: 같은 nc의 FedSA 기준선(`logs/fedsa_cifar100_nc*_bs32_*`)과 같음. `-data Cifar100_<NC>`, `-lbs 32`, 500R, `-eg 10`, 증강 없음, seed 0~2, `--keep_client_models_on_gpu true`.
+- pFedMoE: `--global_arch c8 --pfedmoe_gate_lr 1.0 --max_parallel_clients 1`. Local: 위 Local 인자 + `--max_parallel_clients 4`(같은 nc FedSA 기준선의 mp4).
+- 코드: pFedMoE c8과 같은 복사본(da5ac80). 폴더 `logs/scale_cifar100_pfedmoe_local_20261119/`, 잡 번호 `jobs.tsv`.
+- 계정당 제출 잡 수 상한이 20개(`QOSMaxSubmitJobPerUserLimit`, array task 하나가 1개로 셈)라서, 각 설정은 **잡 하나에서 seed 0→1→2를 차례로** 돈다(`submit_seq.sbatch`). GPU도 1개 QOS라서 속도는 같다.
+- run 로그: `logs/experiment_groups/scale_cifar100_pfedmoe_local_20261119/<설정>/seed<s>.out`.
+
+| 설정 | pFedMoE 잡 | Local 잡 |
+|---|---|---|
+| nc50, jr 0.5 | 494939 | 494930 |
+| nc100, jr 0.5 | 494940 | 494942 |
+| nc100, jr 0.3 | 494941 | 494943 |
+| nc100, jr 0.1 | 494929 | 494944 |
+
+- 순서: pFedMoE c8 본 표(494873~75)가 끝난 뒤에 실행된다.
