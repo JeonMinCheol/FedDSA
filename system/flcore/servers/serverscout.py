@@ -129,7 +129,7 @@ class FedScout(Server):
             held += [int(((lt + a * lp).argmax(1) == y).sum()) for a in self.alphas]
         a_star = self.alphas[int(np.argmax(held))]
         ids, nums, corrects, aucs = [], [], [], []
-        tot = {"scout": 0, "learner": 0, "logit_sum": 0, **{f"a{a:g}": 0 for a in self.alphas}}
+        tot = {"scout": 0, "scout_prior": 0, "learner": 0, "logit_sum": 0, **{f"a{a:g}": 0 for a in self.alphas}}
         cas = {t: [0, 0] for t in self.taus}  # correct, learner runs
         for cid, o in outs.items():
             lt, lp, y = o["test"]
@@ -140,6 +140,7 @@ class FedScout(Server):
             lb = label_binarize(y.numpy(), classes=np.arange(self.num_classes))
             aucs.append(float(metrics.roc_auc_score(lb, z.numpy(), average="micro")) * len(y))
             tot["scout"] += int((lt.argmax(1) == y).sum())
+            tot["scout_prior"] += int(((lt + o["log_prior"]).argmax(1) == y).sum())  # scout + log local class frequencies
             tot["learner"] += int((lp.argmax(1) == y).sum())
             tot["logit_sum"] += int(((lt + lp).argmax(1) == y).sum())
             for a in self.alphas:

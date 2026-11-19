@@ -208,6 +208,7 @@ class clientScout(Client):
                 lp.append(torch.nan_to_num(model(x).float(), nan=0.0, posinf=0.0, neginf=0.0).cpu())  # diverged learner -> no vote
                 ys.append(y.cpu())
             out[tag] = (torch.cat(lt), torch.cat(lp), torch.cat(ys))
+        out["log_prior"] = self.log_prior().cpu()  # diagnostic: is the learner just a local class-prior fix?
         sc.train()
         model.train()
         return out
