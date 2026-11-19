@@ -150,3 +150,13 @@
 - 순서: c8 본 표(FedAPEN·FedMRL) 다음, c20 FedMRL(부록) 앞.
 - **사용자 지시: 이 실험은 GPU에 run 하나씩.** smoke(494925)는 취소했다. `submit_baselines_pack.sbatch`에 `SERIAL=1`(같은 잡 안에서 seed 0→1→2 차례로)을 추가하고, (방법, 설정)마다 잡 하나로 냈다. 제출 잡 수 제한(20) 때문에 run마다 잡을 내지 않았다.
 - 잡: 494931~34 FedAPEN (50·0.5, 100·0.5, 100·0.3, 100·0.1), 494935~38 FedMRL (같은 순서). run 이름 `c8jr<참여율>_<방법>_Cifar100_<명>_s<seed>`.
+
+## 11-19 pFedMoE c8 CIFAR-100 seed 0 완료, 통신량 그림에 pFedMoE 곡선 추가 (ariel)
+- **pFedMoE c8 CIFAR-100 s0 (494873_0)**: 최고 40.92 (R480 부근), R500 40.41. 공유 expert 게이트 가중치 0.45 근처로 안정. seed 1·2 진행 중.
+  - 같은 c8 FedScout보다 낮고, **프로토타입 기준선(FedSA 45.02, FedTGP 44.51)보다도 낮다.** 논문 방식(두 extractor 같은 lr)을 그대로 쓴 결과다. 실험 계획의 부록 변형(공유 lr×3)은 150R에서 46.93이었다.
+  - 이 저장소 이식에서 확인할 점(63 노드 판단용): pFedMoE의 공유 c8 extractor는 기본 projector `pool`이라 64차원 특징을 `AdaptiveAvgPool1d(512)`로 늘려서(값을 8번 반복) private 512차원 특징과 섞는다. 논문은 두 extractor의 표현 차원이 같다고만 한다. 이 늘림이 pFedMoE를 약하게 만드는지는 아직 확인하지 않았다.
+- **통신량**: pFedMoE는 라운드마다 공유 c8 extractor(head 없음)만 올리고 내려받는다. state_dict float 기준 78,064개로, FedScout c8 개인 head의 라운드당 양과 같다. 클라이언트당 500R 누적은 312MB.
+- **`system/comm_vs_acc.py` 수정**: 기준선 곡선(`CURVE_BASE`)을 추가했다. FedScout 로그는 63 노드에, pFedMoE 로그는 ariel에 있어서, pFedMoE는 seed별 TSV(round, acc %)를 `docs/figs/data/pfedmoe_c8_<dataset>_s<seed>.tsv`로 넘긴다.
+  - 내보내기: `python comm_vs_acc.py --export <run 로그> ../docs/figs/data/pfedmoe_c8_<dataset>_s<seed>.tsv` (끝난 run만 받는다).
+  - 지금 들어간 것: `pfedmoe_c8_Cifar100_s0.tsv`. 나머지 seed와 Flowers·Tiny는 끝나는 대로 ariel에서 내보내서 push한다.
+  - `comm_vs_acc_draft.png`는 다시 그리지 않았다. FedScout 로그가 없어서 ariel에서 그리면 FedScout 곡선이 빠진다. 63에서 pull 후 다시 그리면 된다.
