@@ -122,3 +122,7 @@
 - 로그: `logs/experiment_groups/pfedmoe_c8_baselines_20261119/<run 묶음>/seed<s>_job<id>.out`. 게이트가 공유 expert에 주는 평균 가중치가 `pFedMoEDiag` 줄에 찍힌다.
 - 이 계정도 GPU 1개 QOS라서 9개가 하나씩 차례로 돈다.
 - **apenph 취소 (사용자 지시)**: 이 계정에서 돌던 FedAPEN + 개인 head + 공유 lr×3, c20(`logs/fedapen_personal_head_baselines_20261118`, 잡 493123·493124)을 모두 취소했다. Flowers s0은 약 42분 돌다가 취소됐다(로그 `logs/experiment_groups/fedapen_personal_head_baselines_20261118/apenph_flowers/seed0_job493123.out`). Flowers s1·s2와 Tiny s0~2는 시작하지 않았다. 부록 변형 "FedAPEN + 개인 head + lr×3"는 아직 결과가 없다.
+
+## 11-19 역할 정리 (사용자)
+- ariel.khu.ac.kr은 기준선 성능 측정만 한다. FedAPEN 이득 원인(클래스 분포 보정 가설) 검증, apenph 같은 변형·ablation은 **163.180.117.63 담당**.
+- 이 노드는 c8 FedAPEN 로그에 찍히는 `APENDiag`/`APENDiagClient`(shared+prior 포함) 값을 결과 문서에 그대로 옮겨 넘기기만 한다. 해석과 추가 실험은 63에서.
