@@ -836,6 +836,8 @@ if __name__ == "__main__":
     parser.add_argument('--scout_screen_tau', type=float, default=0.5,
                         help="FedScout: the learner trains only on samples where the received scout's p(y) < tau (0 = off)")
     parser.add_argument('--scout_alphas', type=str, default="0,0.1,0.25,0.5,0.75,1", help="FedScout: fusion weights of the learner, picked on the pooled held-out splits (ascending)")
+    parser.add_argument('--scout_screen_prior', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedScout: with --scout_share all, screen on scout logits + log local class frequencies until the freeze")
     parser.add_argument('--scout_cascade_taus', type=str, default="0.5,0.7,0.9",
                         help="FedScout: evaluated inference cascades (learner only where the scout's top-1 prob < tau)")
     parser.add_argument('--pfedmoe_shared_lr_scale', type=float, default=1.0, help="pFedMoE: lr multiplier of the shared extractor (paper uses 1; fairness control)")

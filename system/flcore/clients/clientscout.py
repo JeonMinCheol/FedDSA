@@ -35,6 +35,10 @@ class clientScout(Client):
         self.val = float(args.scout_val)
         self.residual = args.scout_residual  # p2: learner only through the sum; i1: + standalone CE + KL to the scout
         self.screen_tau = float(args.scout_screen_tau)
+        # while the scout's head is the averaged one (--scout_share all, before the freeze) it does not know my label
+        # distribution - that is what the residual learner adds - so screen on scout + log(my class frequencies)
+        self.screen_prior = bool(args.scout_screen_prior) and args.scout_share == "all"
+        self._log_prior = None
         self.cache = bool(args.scout_cache)
         self.frozen = False  # backbone frozen by the server's gate
         self.head_frozen = False  # personal projector/head fixed too (--scout_freeze_head)
@@ -90,7 +94,8 @@ class clientScout(Client):
                 keep = None
                 if self.screen_tau > 0:
                     # scout screening: skip samples the received scout already gets right with confidence
-                    p_y = t_logits.softmax(1).gather(1, y[:, None]).squeeze(1)
+                    g = t_logits + self.log_prior() if (self.screen_prior and not self.frozen) else t_logits
+                    p_y = g.softmax(1).gather(1, y[:, None]).squeeze(1)
                     keep = p_y < self.screen_tau
                     if int(keep.sum()) < 2:  # BatchNorm in train mode needs >= 2 samples
                         keep[p_y.topk(2, largest=False).indices] = True
@@ -129,6 +134,12 @@ class clientScout(Client):
         save_item(model, self.role, "model", self.save_folder_name)
         self.train_time_cost["num_rounds"] += 1
         self.train_time_cost["total_cost"] += time.time() - start
+
+    def log_prior(self):
+        if self._log_prior is None:
+            ys = torch.as_tensor([int(y) for _, y in self.split()[0]])
+            self._log_prior = torch.bincount(ys, minlength=self.num_classes).float().clamp_min(1).log().to(self.device)
+        return self._log_prior
 
     def _cached_loader(self, sc):
         """Frozen backbone (eval BN) on unaugmented data: its features never change, so compute them once and skip the
