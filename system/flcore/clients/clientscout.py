@@ -77,7 +77,7 @@ class clientScout(Client):
         if self.cache and self.frozen and not self.augment:  # cached features are only valid for unaugmented inputs
             trainloader = self._cached_loader(sc)
         model.train()
-        sums = {"task_loss": 0.0, "train_acc": 0.0, "priv_frac": 0.0}
+        sums = {"task_loss": 0.0, "train_acc": 0.0, "priv_frac": 0.0, "nan_skip": 0.0}
         nb = 0
         for _ in range(self.local_epochs):
             for x, y, *ix in trainloader:
@@ -97,21 +97,29 @@ class clientScout(Client):
                 xp, yp, tp = (x, y, t_logits) if keep is None else (x[keep], y[keep], t_logits[keep])
                 out_priv = model(xp)
                 out = out_priv + tp  # residual: the learner fixes what the frozen received scout gets wrong
-                loss = self.loss(out, yp)
+                loss_l = self.loss(out, yp)
                 if self.residual == "i1":  # learner also usable alone: its own CE + KD from the scout
-                    loss = loss + self.loss(out_priv, yp) + F.kl_div(
+                    loss_l = loss_l + self.loss(out_priv, yp) + F.kl_div(
                         F.log_softmax(out_priv.float(), 1), F.softmax(tp, 1), reduction="batchmean")
-                if not fixed:  # the scout trains on its own CE
-                    loss = loss + self.loss(sc.head(sc.base(x) if f is None else sc.base[1:](f)), y)
+                # the scout trains on its own CE
+                loss_s = None if fixed else self.loss(sc.head(sc.base(x) if f is None else sc.base[1:](f)), y)
                 opt.zero_grad(set_to_none=True)
                 if opt_s is not None:
                     opt_s.zero_grad(set_to_none=True)
-                if not torch.isfinite(loss):
+                # a learner that diverged must not stop the scout (and vice versa); with both finite this is exactly
+                # one backward of the sum. Divergence happens when screening leaves the learner a few samples per
+                # batch (BatchNorm), i.e. when the scout memorized my data (no gate / no averaging ablations).
+                ok_l, ok_s = bool(torch.isfinite(loss_l)), loss_s is not None and bool(torch.isfinite(loss_s))
+                if not ok_l:
+                    sums["nan_skip"] += 1.0
+                if not (ok_l or ok_s):
                     continue
-                loss.backward()
-                opt.step()
-                if opt_s is not None:
+                ((loss_l if ok_l else 0) + (loss_s if ok_s else 0)).backward()
+                if ok_l:
+                    opt.step()
+                if ok_s:
                     opt_s.step()
+                loss = (loss_l if ok_l else 0) + (loss_s if ok_s else 0)
                 with torch.no_grad():
                     sums["task_loss"] += float(loss)
                     sums["train_acc"] += float(out.argmax(1).eq(yp).float().mean())
@@ -186,7 +194,7 @@ class clientScout(Client):
             for x, y in loader:
                 x, y = self._to(x, y)
                 lt.append(sc(x).float().cpu())
-                lp.append(model(x).float().cpu())
+                lp.append(torch.nan_to_num(model(x).float(), nan=0.0, posinf=0.0, neginf=0.0).cpu())  # diverged learner -> no vote
                 ys.append(y.cpu())
             out[tag] = (torch.cat(lt), torch.cat(lp), torch.cat(ys))
         sc.train()

@@ -9,7 +9,7 @@ import torch
 from sklearn import metrics
 from sklearn.preprocessing import label_binarize
 
-from flcore.clients.clientscout import ALPHAS, clientScout
+from flcore.clients.clientscout import clientScout
 from flcore.servers.serverbase import Server
 from flcore.trainmodel.models import BaseHeadSplit
 
@@ -35,6 +35,9 @@ class FedScout(Server):
         self.frozen = False
         self.best, self.best_round, self.best_state = -1.0, 0, None
         self.taus = [float(t) for t in str(args.scout_cascade_taus).split(",") if t]
+        # learner weight grid for the fusion scout + alpha * learner, ascending (ties -> smaller); alpha > 1 lets the
+        # learner outweigh the scout (FedAPEN learns w_private ~ 0.57, i.e. alpha ~ 1.3)
+        self.alphas = [float(x) for x in str(args.scout_alphas).split(",") if x]
         self.Budget = []
         print(f"\nJoin ratio / total clients: {self.join_ratio} / {self.num_clients}")
         print(f"FedScout: scout {arch} x{args.scout_width} ({sum(p.numel() for p in scout.parameters()) / 1e3:.1f}K params), "
@@ -120,13 +123,13 @@ class FedScout(Server):
         scout alone, the learner alone, every alpha, and the confidence cascade (learner only where the scout's top-1
         probability is below tau)."""
         outs = {c.id: c.logits() for c in self.clients}
-        held = np.zeros(len(ALPHAS))
+        held = np.zeros(len(self.alphas))
         for o in outs.values():
             lt, lp, y = o["held"]
-            held += [int(((lt + a * lp).argmax(1) == y).sum()) for a in ALPHAS]
-        a_star = ALPHAS[int(np.argmax(held))]
+            held += [int(((lt + a * lp).argmax(1) == y).sum()) for a in self.alphas]
+        a_star = self.alphas[int(np.argmax(held))]
         ids, nums, corrects, aucs = [], [], [], []
-        tot = {"scout": 0, "learner": 0, "logit_sum": 0, **{f"a{a:g}": 0 for a in ALPHAS}}
+        tot = {"scout": 0, "learner": 0, "logit_sum": 0, **{f"a{a:g}": 0 for a in self.alphas}}
         cas = {t: [0, 0] for t in self.taus}  # correct, learner runs
         for cid, o in outs.items():
             lt, lp, y = o["test"]
@@ -139,7 +142,7 @@ class FedScout(Server):
             tot["scout"] += int((lt.argmax(1) == y).sum())
             tot["learner"] += int((lp.argmax(1) == y).sum())
             tot["logit_sum"] += int(((lt + lp).argmax(1) == y).sum())
-            for a in ALPHAS:
+            for a in self.alphas:
                 tot[f"a{a:g}"] += int(((lt + a * lp).argmax(1) == y).sum())
             conf = lt.softmax(1).amax(1)
             for t in self.taus:

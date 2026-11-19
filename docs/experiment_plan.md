@@ -47,9 +47,13 @@ CIFAR-100, Flowers102, Tiny-ImageNet × seed 0~2. 한 run에서 세 값을 모�
 |---|---|---|---|
 | HtFL (원래 모델만) | LG-FedAvg, FedGH, FedProto, FedTGP, FedSA(논문 공식 λ=1·MCL 1·CC 1 = 코드 기본값, 본 표 값은 이 설정으로 잰 것), FedRG | 원래 모델만 | 3 데이터셋 측정 완료 |
 | 하한 | **Local** | 원래 모델만 | **아직 없음, 최우선** (C1 핵심) |
-| 공유 모델 계열 | FedAPEN(원본, `--global_arch c20`) | 함께 배포 | 실행 중 |
-| 공유 모델 계열 | FedAPEN + 개인 head(`--apen_personal_head true`) | 함께 배포 | CIFAR s0만 있음 → 3×3 |
+| 공유 모델 계열 | **FedAPEN 원본**(원 논문 방식, 공유 모델 구조만 c20, `-algo FedAPEN --global_arch c20`) | 함께 배포 | Flowers 68.53·Tiny 48.18 완료, **CIFAR 3 seed 최우선** |
+| 공유 모델 계열 | **pFedMoE 원본**(원 논문: 두 extractor 같은 lr, gate lr은 논문 그리드 중 최선 1.0, `-algo pFedMoE --global_arch c20 --pfedmoe_gate_lr 1.0`) | 함께 배포 | 3 데이터셋 × 3 seed 필요 |
 | 공유 모델 계열 | FedMRL(`--global_arch c20`) | 함께 배포 | 실행 중 |
+
+**본 표의 기준선은 원 논문 방식 그대로 쓴다(11-19 사용자 결정).** 이기종 FL에 옮기면서 꼭 필요한 조정(공유 모델 구조를 우리 scout과 같은 c20으로)만 하고 논문에 밝힌다. 우리 원칙을 붙인 변형은 본 표가 아니라 부록/분석 절에 둔다("우리 발견이 다른 방법에도 통한다", "기준선을 튜닝해도 우리가 이긴다"):
+- FedAPEN + 개인 head + 공유 lr×3(`--apen_personal_head true --apen_shared_lr_scale 3`, 다른 노드 실행 중)
+- pFedMoE + 공유 extractor lr×3(`--pfedmoe_shared_lr_scale 3 --pfedmoe_gate_lr 1.0`, 150R 46.93)
 | 선택 | FML(`--global_arch c20`) | 함께 배포 | 리뷰어가 물을 가능성 있음, CIFAR만이라도 |
 
 표 구성: 열 = 데이터셋, 행 = 방법, 우리 방법은 "결합(본 결과) / 쌍둥이 단독" 두 줄. 원래 모델만 배포하는 경우(I1 변형)는 부록.
