@@ -166,3 +166,20 @@
 - 마지막 라운드가 최고이고 아직 오르는 중이다(R400 57.94 → R450 58.67 → R500 59.74). 프로토콜대로 500R 값을 쓴다.
 - R500 APENDiag (seed 평균): private 51.7, shared(c8) 34.2, w_private 0.71. 이 run은 shared+prior 진단 추가 전 코드다.
 - c20(부록) 대비: 68.53 ± 1.61 @R490 → c8 59.74, −8.8. 같은 방식(표본 표준편차)으로 다시 계산해 값이 같다.
+
+## 11-19 FedSA 본 표 값 확인 (사용자 요청)
+- 로그: `system/logs/fedsa_{Cifar100,Flowers102}_seed{0,1,2}_job{490539,490551}.out` (11-17, 이 계정). Tiny FedSA 로그는 이 저장소에 없다.
+- 설정은 본 표와 같다: FedSA, `lamda = 1.0`, HtFE-img-8, 20 clients, join 1.0, 500R, eval 10, lr 0.01, 배치 128/32(Flowers), `max_parallel_clients 2`. 당시 코드(6260b40)에는 증강 코드가 없다(증강 없음과 같음. 다만 당시 커밋 안 된 작업본으로 돌렸는지는 모른다).
+- **집계 방식이 다르다.** handoff 표의 45.02·55.75는 **seed별 최고값의 평균**이다(CIFAR 44.70/45.26/45.10, Flowers 55.96/55.86/55.43). 프로토콜(seed 평균 곡선의 최고)로 다시 계산하면:
+
+| | handoff 값 (seed별 최고 평균) | 프로토콜 값 (seed 평균 곡선 최고) |
+|---|---|---|
+| CIFAR-100 | 45.02 | 44.89 ± 0.36 @R430 |
+| Flowers102 | 55.75 | 55.59 ± 0.24 @R440 |
+
+- 차이는 0.13~0.16이고 기준선에 유리한 쪽이다. FedAPEN·FedMRL 값은 프로토콜 방식이라, 한 표에 넣으려면 같은 방식으로 맞춰야 한다. 다른 HtFL 기준선(LG-FedAvg 등)도 같은 방식으로 잰 것인지는 확인하지 않았다(로그가 이 저장소에 없음).
+- **통신량 그림용 곡선 추가**: `docs/figs/data/`에 seed별 (라운드, 정확도 %) TSV를 내보냈다(`comm_vs_acc.py --export`, 컴퓨트 노드).
+  - `fedsa_{Cifar100,Flowers102}_s{0,1,2}.tsv`, `fedapen_c20_{Cifar100,Flowers102,TinyImagenet}_s{0,1,2}.tsv`, `fedapen_c8_Flowers102_s{0,1,2}.tsv`.
+  - `comm_vs_acc.py`: 위 곡선을 `CURVE_BASE`에 넣었다(라운드당 float은 데이터셋별 `per_round_floats`). 곡선이 있는 기준선은 500R 점을 다시 찍지 않는다. 범례는 세 패널을 합친다. `BASE`의 FedSA CIFAR·Flowers를 프로토콜 값(44.89, 55.59)으로, FedAPEN c20 Tiny를 최종값 48.31(이전 48.18은 run 도중 잠정치)로 바꿨다.
+  - 확인: 컴퓨트 노드에서 그림과 표가 오류 없이 나온다. 표의 seed 평균 최고는 위에서 계산한 값과 같다. `comm_vs_acc_draft.png`는 다시 그리지 않았다(FedScout 로그가 63에만 있음).
+  - Tiny FedSA는 로그가 없어 곡선이 없고 handoff 값(23.88, seed별 최고 평균) 점으로 남는다.

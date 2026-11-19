@@ -10,7 +10,7 @@ point at its 500R total, from its per-round payload (d = 512 feature dim, C clas
   FedRG                     : up k*d prototypes, down k*d aggregated representations
   FedAPEN                   : up + down the shared model (CIFARResNet-<depth> with a C-class fc)
   pFedMoE                   : up + down the shared c8 extractor (no head), 78064 state floats like FedScout's count
-Curve baselines (pFedMoE) are seed TSVs (round, acc %) under docs/figs/data/, exported on the node that ran them:
+Curve baselines (pFedMoE, FedSA, FedAPEN) are seed TSVs (round, acc %) under docs/figs/data/, exported on the node that ran them:
   python comm_vs_acc.py --export <run log> ../docs/figs/data/pfedmoe_c8_<dataset>_s<seed>.tsv
 usage: python comm_vs_acc.py [--out ../docs/figs/comm_vs_acc_draft.png]"""
 import argparse
@@ -29,8 +29,8 @@ APEN_PARAMS = {("c20", 100): 278324, ("c20", 102): 278454, ("c20", 200): 284824,
                ("c8", 100): 83892, ("c8", 102): 84022, ("c8", 200): 90392}
 BASE = {  # 500R, seed-mean curve max (docs/twin_handoff.md section 4; FedAPEN c20 from docs/baselines_progress.md)
     "LG-FedAvg": (40.64, 53.80, 23.64), "FedGH": (39.83, 53.06, 23.19), "FedProto": (38.24, 49.88, 18.24),
-    "FedTGP": (44.51, 55.60, 23.20), "FedSA": (45.02, 55.75, 23.88), "FedRG": (41.98, 50.62, 24.15),
-    "FedAPEN (c20)": (56.95, 68.53, 48.18)}
+    "FedTGP": (44.51, 55.60, 23.20), "FedSA": (44.89, 55.59, 23.88), "FedRG": (41.98, 50.62, 24.15),  # FedSA C/F re-aggregated (progress log), Tiny = handoff
+    "FedAPEN (c20)": (56.95, 68.53, 48.31)}
 OURS = [  # label, log glob per dataset (seeds), color
     ("FedScout c20, personal head", "logs/m500_{d}_FedScout_s[0-2].out", "#2a78d6"),
     ("FedScout c20, share-all", {"Cifar100": "logs/abl_shareall_Cifar100_s[0-2].out",
@@ -39,6 +39,10 @@ OURS = [  # label, log glob per dataset (seeds), color
 ]
 CURVE_BASE = [  # label, seed TSV glob, per-round floats per client (up + down), color
     ("pFedMoE (c8)", "../docs/figs/data/pfedmoe_c8_{d}_s[0-2].tsv", 2 * 78064, "#8a5cc7"),
+    # per-round floats as a method name = per_round_floats(name, dataset); exported on ariel from the baseline logs
+    ("FedSA", "../docs/figs/data/fedsa_{d}_s[0-2].tsv", "FedSA", "#8a8984"),
+    ("FedAPEN (c20)", "../docs/figs/data/fedapen_c20_{d}_s[0-2].tsv", "FedAPEN (c20)", "#c98a2e"),
+    ("FedAPEN (c8)", "../docs/figs/data/fedapen_c8_{d}_s[0-2].tsv", "FedAPEN (c8)", "#d4542c"),
 ]
 
 
@@ -46,7 +50,8 @@ def per_round_floats(method, d):
     C, k = DATA[d]
     head = C * D + C
     return {"FedProto": (k + C) * D, "FedTGP": (k + C) * D, "FedSA": (k + C) * D, "FedGH": k * D + head,
-            "LG-FedAvg": 2 * head, "FedRG": 2 * k * D, "FedAPEN (c20)": 2 * APEN_PARAMS[("c20", C)]}[method]
+            "LG-FedAvg": 2 * head, "FedRG": 2 * k * D, "FedAPEN (c20)": 2 * APEN_PARAMS[("c20", C)],
+            "FedAPEN (c8)": 2 * APEN_PARAMS[("c8", C)]}[method]
 
 
 def mb(floats):
@@ -112,15 +117,18 @@ for j, (d, ax) in enumerate(zip(DATA, axes)):
         ax.plot(m[1:], a[1:], color=color, lw=2, label=f"{label} (n={n})")  # round 0 has no comm (log axis)
         rows.append((d, f"{label} (n={n}, R{r[-1]})", best_within(a, m, proto_budget), best_within(a, m, apen_budget),
                      float(a.max()), float(m[-1])))
+    curved = set()  # baselines drawn as curves: their 500R point is not drawn again
     for label, pat, floats, color in CURVE_BASE:
         paths = sorted(glob.glob(pat.format(d=d)))
         if not paths:
             continue
+        floats = per_round_floats(floats, d) if isinstance(floats, str) else floats
+        curved.add(label)
         r, a, m, n = seed_mean(paths, lambda p: tsv_curve(p, floats))
         ax.plot(m[1:], a[1:], color=color, lw=1.6, ls="--", label=f"{label} (n={n})")
         rows.append((d, f"{label} (n={n}, R{r[-1]})", best_within(a, m, proto_budget), best_within(a, m, apen_budget),
                      float(a.max()), float(m[-1])))
-    pts = sorted(((mb(per_round_floats(name, d)) * ROUNDS, vals[j], name) for name, vals in BASE.items()), key=lambda t: t[1])
+    pts = sorted(((mb(per_round_floats(name, d)) * ROUNDS, vals[j], name) for name, vals in BASE.items() if name not in curved), key=lambda t: t[1])
     gap, last = 2.4, -1e9  # stacked labels: at least `gap` accuracy points apart, leader line to the dot
     for x, y, name in pts:
         ax.scatter([x], [y], s=36, color="#8a8984", zorder=3, edgecolors="#fcfcfb", linewidths=1.5)
@@ -141,8 +149,11 @@ for j, (d, ax) in enumerate(zip(DATA, axes)):
         ax.spines[s].set_visible(False)
     ax.tick_params(colors="#52514e", labelsize=8)
 axes[0].set_ylabel("test accuracy (%)", fontsize=9, color="#52514e")
-h, l = axes[0].get_legend_handles_labels()
-fig.legend(h, [x.split(" (n=")[0] for x in l], fontsize=9, frameon=False, loc="lower center", ncol=3)
+leg = {}  # union over panels: a curve may exist for only some datasets (FedAPEN c8: Flowers so far)
+for a in axes:
+    for hh, ll in zip(*a.get_legend_handles_labels()):
+        leg.setdefault(ll.split(" (n=")[0], hh)
+fig.legend(list(leg.values()), list(leg), fontsize=9, frameon=False, loc="lower center", ncol=4)
 fig.patch.set_facecolor("#fcfcfb")
 fig.tight_layout(rect=(0, 0.07, 1, 1))
 fig.savefig(args.out, dpi=160, facecolor=fig.get_facecolor())
