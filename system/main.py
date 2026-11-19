@@ -822,7 +822,7 @@ if __name__ == "__main__":
     parser.add_argument('--scout_lr_scale', type=float, default=3.0, help="FedScout: scout lr = local lr x this")
     parser.add_argument('--scout_wd', type=float, default=0.0, help="FedScout: scout weight decay")
     parser.add_argument('--scout_val', type=float, default=0.05, help="FedScout: held-out fraction of local training data (gate, alpha)")
-    parser.add_argument('--scout_share', type=str, default="all", choices=["backbone", "all", "none"],
+    parser.add_argument('--scout_share', type=str, default="backbone", choices=["backbone", "all", "none"],
                         help="FedScout: what of the scout is FedAvg'd (all = head too, none = no averaging; ablations)")
     parser.add_argument('--scout_realign', type=int, default=1, help="FedScout: head-realignment epochs after each average (0 = off)")
     parser.add_argument('--scout_gate', type=int, default=20, help="FedScout: memorization-gate patience in rounds (0 = never freeze)")
