@@ -105,3 +105,20 @@
 - 이득은 모든 클라이언트에서 양수(최소 +2.5)라서 몇 명에게만 몰려 있지는 않다. 하지만 **private이 약한 큰 모델일수록 크다.** ResNet152는 private 28%, shared 29%인데 앙상블이 60%다.
 - 둘 다 30% 미만인 모델의 logit 합이 60%가 되는 것은 보통의 앙상블로는 설명하기 어렵다. 후보 설명: 공유 모델(평균 head)은 전역 클래스 분포로 예측하고, private 모델은 지역 클래스 분포(Dir 0.1)를 안다. logit을 더하면 공유 모델에 지역 클래스 사전확률을 곱하는 효과가 난다(da5ac80의 scout screening prior와 같은 논리). **아직 검증하지 않았다.** 확인하려면 공유 logit + log(지역 클래스 빈도)만으로 정확도를 재 보면 된다.
 - **진단 줄 추가 (11-19)**: `clientapen.test_metrics`에서 `shared logit + log(지역 학습 데이터 클래스 빈도)` 정확도를 같이 잰다(테스트 라벨은 쓰지 않음). `APENDiag ... shared+prior=`, `APENDiagClient id:private/shared/w/shared+prior`로 찍힌다. 이미 돌던 c8 Flowers(494849)에는 없고, c8 Tiny(494850)부터 나온다. 판정: shared+prior가 앙상블에 가까우면 FedAPEN 이득의 대부분은 지역 클래스 분포 보정이다.
+
+## 11-19 a2019102224 노드: pFedMoE c8 (본 표 기준선)
+- 이 노드(계정 a2019102224, 로그인 노드 ariel-master)는 **pFedMoE만** 돌린다. FedScout는 다른 노드에서 돌린다.
+- 인자는 실험 계획대로 원 논문 방식: `-algo pFedMoE --global_arch c8 --pfedmoe_gate_lr 1.0`. 나머지는 지시서 그대로(HtFE-img-8, 20 clients, 500R, `-eg 10`, 증강 없음, `--max_parallel_clients 1`, Flowers는 `-lbs 32`, 나머지는 128). 묶음 없이 run 하나에 잡 하나(array 0-2 = seed 0~2).
+- 코드: 커밋 da5ac80을 `logs/pfedmoe_c8_baselines_20261119/source/`에 복사해 두고 그 복사본으로 실행한다. 그 뒤의 커밋은 이 run에 영향을 주지 않는다.
+- python: `/nas2/data/a2019102224/miniconda3/envs/htfllib/bin/python` (`LD_LIBRARY_PATH`에 env의 lib 필요).
+
+| 잡 ID | 데이터셋 | run 이름 | 상태 (11-19 제출) |
+|---|---|---|---|
+| 494873 | CIFAR-100 | `pfedmoe_c8_cifar_r500_s{0,1,2}_20261119` | s0 실행 중 (ariel-v11), s1·s2 대기 |
+| 494874 | Flowers102 | `pfedmoe_c8_flowers_r500_s{0,1,2}_20261119` | 대기 |
+| 494875 | Tiny-ImageNet | `pfedmoe_c8_tiny_r500_s{0,1,2}_20261119` | 대기 |
+
+- 제출 스크립트: `logs/pfedmoe_c8_baselines_20261119/<run 묶음>/submit.sbatch`. 잡 번호는 같은 폴더의 `jobs.tsv`에 있다.
+- 로그: `logs/experiment_groups/pfedmoe_c8_baselines_20261119/<run 묶음>/seed<s>_job<id>.out`. 게이트가 공유 expert에 주는 평균 가중치가 `pFedMoEDiag` 줄에 찍힌다.
+- 이 계정도 GPU 1개 QOS라서 9개가 하나씩 차례로 돈다.
+- **apenph 취소 (사용자 지시)**: 이 계정에서 돌던 FedAPEN + 개인 head + 공유 lr×3, c20(`logs/fedapen_personal_head_baselines_20261118`, 잡 493123·493124)을 모두 취소했다. Flowers s0은 약 42분 돌다가 취소됐다(로그 `logs/experiment_groups/fedapen_personal_head_baselines_20261118/apenph_flowers/seed0_job493123.out`). Flowers s1·s2와 Tiny s0~2는 시작하지 않았다. 부록 변형 "FedAPEN + 개인 head + lr×3"는 아직 결과가 없다.
