@@ -183,3 +183,11 @@
   - `comm_vs_acc.py`: 위 곡선을 `CURVE_BASE`에 넣었다(라운드당 float은 데이터셋별 `per_round_floats`). 곡선이 있는 기준선은 500R 점을 다시 찍지 않는다. 범례는 세 패널을 합친다. `BASE`의 FedSA CIFAR·Flowers를 프로토콜 값(44.89, 55.59)으로, FedAPEN c20 Tiny를 최종값 48.31(이전 48.18은 run 도중 잠정치)로 바꿨다.
   - 확인: 컴퓨트 노드에서 그림과 표가 오류 없이 나온다. 표의 seed 평균 최고는 위에서 계산한 값과 같다. `comm_vs_acc_draft.png`는 다시 그리지 않았다(FedScout 로그가 63에만 있음).
   - Tiny FedSA는 로그가 없어 곡선이 없고 handoff 값(23.88, seed별 최고 평균) 점으로 남는다.
+
+## 11-19 FedSA Tiny-ImageNet 곡선 (ariel, 위 항목의 빈자리)
+- 위 항목의 "Tiny FedSA 로그가 없다"는 63 저장소 기준이다. **ariel에 있다**: `logs/fedsa_tinyimagenet_lam1_cc1_mp4_s012_20261117/` (잡 490632, seed 0~2, 500R).
+  - 설정: FedSA 공식 λ=1·MCL 1·CC 1, anchor momentum 0.9999, 20 clients, join 1.0, 배치 128, `max_parallel_clients 4`. 당시 코드 사본에는 증강 코드가 없다.
+  - 로그: `logs/experiment_groups/fedsa_tinyimagenet_lam1_cc1_mp4_s012_20261117/seed<s>_job490632.out` (같은 폴더의 job490602는 평가 없이 실패한 시도).
+- 프로토콜 값: **23.92 ± 0.06 @R60** (seed별 23.98 / 23.93 / 23.86). R500 seed 평균은 22.79. `BASE`의 23.88(seed별 최고 평균)과는 집계 방식 차이다. 곡선이 있으니 그림과 표에는 23.92가 쓰인다.
+- **최고값이 R60에 나오고 그 뒤로 내려간다.** 500R 점으로 찍으면 통신량이 실제 도달 시점(약 36MB)보다 8배 넘게 크게 보인다. 곡선으로 바꾸면 이 왜곡이 없어진다.
+- 내보낸 TSV: `docs/figs/data/fedsa_TinyImagenet_s{0,1,2}.tsv` (`comm_vs_acc.py --export`). 22da2c5의 `CURVE_BASE` FedSA 항목이 그대로 읽는다. 코드 변경은 없다. ariel에서 그려서 Tiny FedSA가 곡선(n=3)으로 나오는 것을 확인했다.
