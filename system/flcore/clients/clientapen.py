@@ -101,7 +101,10 @@ class clientAPEN(clientFML):
         global_model = self.shared_model()
         self.learn_weight(model, global_model)
         wp = float(self.w)
-        test_acc = test_num = cp = cg = 0
+        test_acc = test_num = cp = cg = cgp = 0
+        if getattr(self, "_log_prior", None) is None:  # local class frequencies from training data only (no test labels)
+            ys = torch.as_tensor([int(y) for _, y in self.train_part])
+            self._log_prior = torch.bincount(ys, minlength=self.num_classes).float().clamp_min(1).log().to(self.device)
         y_prob, y_true = [], []
         with torch.no_grad():
             for x, y in self.load_test_data():
@@ -110,10 +113,11 @@ class clientAPEN(clientFML):
                 output = wp * p + (1 - wp) * g
                 cp += int((p.argmax(1) == y).sum())  # diagnostics: private alone / shared alone
                 cg += int((g.argmax(1) == y).sum())
+                cgp += int(((g + self._log_prior).argmax(1) == y).sum())  # shared + log local prior: is the gain a prior fix?
                 test_acc += int((output.argmax(1) == y).sum())
                 test_num += y.shape[0]
                 y_prob.append(output.cpu().numpy())
                 y_true.append(label_binarize(y.cpu().numpy(), classes=np.arange(self.num_classes)))
-        self.diag = (cp, cg, test_num, wp)
+        self.diag = (cp, cg, test_num, wp, cgp)
         auc = metrics.roc_auc_score(np.concatenate(y_true), np.concatenate(y_prob), average='micro')
         return test_acc, test_num, auc
