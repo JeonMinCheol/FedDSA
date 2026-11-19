@@ -160,3 +160,9 @@
   - 내보내기: `python comm_vs_acc.py --export <run 로그> ../docs/figs/data/pfedmoe_c8_<dataset>_s<seed>.tsv` (끝난 run만 받는다).
   - 지금 들어간 것: `pfedmoe_c8_Cifar100_s0.tsv`. 나머지 seed와 Flowers·Tiny는 끝나는 대로 ariel에서 내보내서 push한다.
   - `comm_vs_acc_draft.png`는 다시 그리지 않았다. FedScout 로그가 없어서 ariel에서 그리면 FedScout 곡선이 빠진다. 63에서 pull 후 다시 그리면 된다.
+
+## FedAPEN Flowers102 c8 완료 (494849, 11-19 14:53, 본 표)
+- **59.74 ± 0.53 @R500** (seed 평균 곡선 최고, 표본 표준편차; seed별 R500 59.56 / 60.34 / 59.32). 세 seed 모두 exit 0, 오류 없음.
+- 마지막 라운드가 최고이고 아직 오르는 중이다(R400 57.94 → R450 58.67 → R500 59.74). 프로토콜대로 500R 값을 쓴다.
+- R500 APENDiag (seed 평균): private 51.7, shared(c8) 34.2, w_private 0.71. 이 run은 shared+prior 진단 추가 전 코드다.
+- c20(부록) 대비: 68.53 ± 1.61 @R490 → c8 59.74, −8.8. 같은 방식(표본 표준편차)으로 다시 계산해 값이 같다.
