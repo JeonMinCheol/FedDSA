@@ -107,7 +107,7 @@
 - **진단 줄 추가 (11-19)**: `clientapen.test_metrics`에서 `shared logit + log(지역 학습 데이터 클래스 빈도)` 정확도를 같이 잰다(테스트 라벨은 쓰지 않음). `APENDiag ... shared+prior=`, `APENDiagClient id:private/shared/w/shared+prior`로 찍힌다. 이미 돌던 c8 Flowers(494849)에는 없고, c8 Tiny(494850)부터 나온다. 판정: shared+prior가 앙상블에 가까우면 FedAPEN 이득의 대부분은 지역 클래스 분포 보정이다.
 
 ## 11-19 a2019102224 노드: pFedMoE c8 (본 표 기준선)
-- 이 노드(계정 a2019102224, 로그인 노드 ariel-master)는 **pFedMoE만** 돌린다. FedScout는 다른 노드에서 돌린다.
+- 노드 역할: **ariel.khu.ac.kr**은 기준선 측정, **163.180.117.63**은 FedScout 실험. 이 계정(a2019102224, 로그인 노드 ariel-master)은 ariel에서 **pFedMoE**를 돌린다.
 - 인자는 실험 계획대로 원 논문 방식: `-algo pFedMoE --global_arch c8 --pfedmoe_gate_lr 1.0`. 나머지는 지시서 그대로(HtFE-img-8, 20 clients, 500R, `-eg 10`, 증강 없음, `--max_parallel_clients 1`, Flowers는 `-lbs 32`, 나머지는 128). 묶음 없이 run 하나에 잡 하나(array 0-2 = seed 0~2).
 - 코드: 커밋 da5ac80을 `logs/pfedmoe_c8_baselines_20261119/source/`에 복사해 두고 그 복사본으로 실행한다. 그 뒤의 커밋은 이 run에 영향을 주지 않는다.
 - python: `/nas2/data/a2019102224/miniconda3/envs/htfllib/bin/python` (`LD_LIBRARY_PATH`에 env의 lib 필요).
