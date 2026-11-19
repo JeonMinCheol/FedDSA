@@ -41,6 +41,8 @@ CURVE_BASE = [  # label, seed TSV glob, per-round floats per client (up + down),
     ("pFedMoE (c8)", "../docs/figs/data/pfedmoe_c8_{d}_s[0-2].tsv", 2 * 78064, "#8a5cc7"),
     # per-round floats as a method name = per_round_floats(name, dataset); exported on ariel from the baseline logs
     ("FedSA", "../docs/figs/data/fedsa_{d}_s[0-2].tsv", "FedSA", "#8a8984"),
+    ("FedTGP", "../docs/figs/data/fedtgp_{d}_s[0-2].tsv", "FedTGP", "#52514e"),  # user's log (-t 3, seed arg 0)
+    ("FedRG", "../docs/figs/data/fedrg_{d}_s[0-2].tsv", "FedRG", "#a8a69e"),  # user's log (-t 3, seed arg 0)
     ("FedAPEN (c20)", "../docs/figs/data/fedapen_c20_{d}_s[0-2].tsv", "FedAPEN (c20)", "#c98a2e"),
     ("FedAPEN (c8)", "../docs/figs/data/fedapen_c8_{d}_s[0-2].tsv", "FedAPEN (c8)", "#d4542c"),
 ]
@@ -102,7 +104,7 @@ if args.export:
     raise SystemExit(f"wrote {len(pts)} rounds to {args.export[1]}")
 os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
-fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+fig, axes = plt.subplots(1, 3, figsize=(15, 5.2))
 rows = []
 for j, (d, ax) in enumerate(zip(DATA, axes)):
     proto_budget = mb(per_round_floats("FedTGP", d)) * ROUNDS
@@ -153,9 +155,9 @@ leg = {}  # union over panels: a curve may exist for only some datasets (FedAPEN
 for a in axes:
     for hh, ll in zip(*a.get_legend_handles_labels()):
         leg.setdefault(ll.split(" (n=")[0], hh)
-fig.legend(list(leg.values()), list(leg), fontsize=9, frameon=False, loc="lower center", ncol=4)
+fig.legend(list(leg.values()), list(leg), fontsize=9, frameon=False, loc="lower center", ncol=5)
 fig.patch.set_facecolor("#fcfcfb")
-fig.tight_layout(rect=(0, 0.07, 1, 1))
+fig.tight_layout(rect=(0, 0.12, 1, 1))
 fig.savefig(args.out, dpi=160, facecolor=fig.get_facecolor())
 print(f"saved {args.out}")
 

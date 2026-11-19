@@ -8,10 +8,10 @@
 
 ## 1. 연구 한 줄 요약
 
+**방향(11-19): 이기종 FL에서 지식이 실제로 어디로 흐르는지 밝히고, 그에 맞춘 싼 설계(FedScout)를 제안한다.** 주장과 근거는 `docs/experiment_plan.md` 0절.
 여러 제조사 IoT 기기(용량 등급이 다름, 증강 불가, 극단적 label skew)의 이기종 FL.
-모든 기기가 **같은 구조의 작은 쌍둥이(CIFAR ResNet-20, 0.27M)** 를 하나 더 두고 backbone만 FedAvg 하며,
-각자의 이기종 private 모델은 쌍둥이 위에 **잔차**로 얹는다(예측 = 쌍둥이 logit + private logit).
-쌍둥이가 클라이언트 데이터 전체를 암기하기 시작하면 **게이트**가 쌍둥이를 고정하고 공유(통신)를 끊는다.
+모든 기기가 **같은 구조의 작은 scout(CIFAR ResNet-8, MLPerf Tiny 크기)** 을 하나 더 두고 backbone만 FedAvg 하며(개인 head),
+각자의 이기종 private 모델은 scout 위에 **잔차**로 얹는다(예측 = scout logit + α·private logit). scout이 이미 맞히는 샘플은 private이 학습·추론에서 건너뛴다.
 
 ## 2. 진단 (논문의 핵심 기여 후보)
 
@@ -19,7 +19,8 @@
 |---|---|---|
 | F1 | 증강이 없으면 교차 구조 채널(프로토타입, logit, 생성기)은 Local과 차이가 없다 | 기준선 표 (Local 500R은 아직 필요) |
 | F2 | 같은 구조의 가중치 평균만 지식을 옮긴다 | 평균한 쌍둥이 vs 평균하지 않은 쌍둥이: +11 (500R) |
-| F3 | 공유+private 계열(FedAPEN 등)은 공유 모델 head까지 평균한다. label skew에서는 이 때문에 공유 모델이 개인화 평가에서 무너진다 | head까지 평균하면 쌍둥이 단독 17.8% (A1). 수정판 FedAPEN 공유 모델도 R10에 6.8% |
+| F3 | 공유+private 계열(FedAPEN 등)은 공유 모델 head까지 평균한다. 평균 head는 개인화 평가에서 초반에 약하다("붕괴"는 초반에만 해당: FedAPEN c20 공유 모델은 500R에 Flowers 47·Tiny 28). 오히려 평균 head 아래서 학습한 backbone이 더 좋다(shareall c20 CIFAR 64.5 vs 개인 head 61.5) | head까지 평균하면 쌍둥이 단독 17.8% (A1). 수정판 FedAPEN 공유 모델도 R10에 6.8% |
+| F5 | 이기종 private은 지역 클래스 분포만 더한다 | FedAPEN c8: 공유 + log 지역 클래스 비율 44.1 ≥ 앙상블 42.2. FedScout c8 shareall: scout + 비율 ≥ 결합 (Flowers 65.3 vs 64.5, CIFAR 58.8 vs 54.4) |
 | F4 | 평균되는 쌍둥이는 결국 클라이언트 데이터 전체를 암기한다 | 게이트의 train−held-out 차이가 0에서 9~11까지 커짐 |
 
 **적용 범위 서술 원칙(사용자 결정 11-18):** 센서 데이터셋을 더 찾지 않고, 논문에 범위를 정직하게 쓴다(데이터 부족에 따른 암기가 문제인 경우에 효과, 시간에 따른 분포 이동에는 해당 없음; HAR은 공유 모델이 R10에 96%로 포화해 제외).

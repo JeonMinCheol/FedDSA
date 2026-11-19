@@ -2,14 +2,26 @@
 
 목표: IoT-J급 IEEE 저널. 실험 규칙과 기존 결과는 `docs/twin_handoff.md`, 매일의 판정은 `system/logs/night_actions_20261117.md`.
 
-## 0. 논문 주장과 그것을 받치는 실험
+## 0. 논문 방향과 주장 (11-19 사용자 결정)
 
-| 주장 | 내용 | 받치는 실험 |
-|---|---|---|
-| C1 진단 | 증강이 없는 HtFL에서 구조 간 채널(프로토타입, 앵커, logit, 생성기)은 Local과 같다. 같은 구조 가중치 평균만 지식을 옮긴다 | 3절 본 표의 Local·HtFL 기준선, 6절 진단 |
-| C2 방법 | 공유 쌍둥이(안정) + 이기종 private 잔차(가소) + 암기 게이트 + 재정렬 + 전역 held-out α | 3절 본 표, 4절 ablation |
-| C3 효율 | 동결 후 통신 0, 쌍둥이 게이트로 private 학습·추론 연산 절감, 동결 후 특징 캐시 | 7절 통신·기기 측정 |
-| (부록) 배포 | 원래 모델만 배포해야 할 때는 I1 변형(`--scout_residual i1`)으로 약 43(Local·HtFL 수준, F1과 일치). 본 주장에서 제외(11-19 사용자 결정: 결합 logit이 본 결과). 동결 후 회복은 폐기(결합 이득 없음, screening과 충돌, I1이 더 높음) | 4절 P2 vs I1 ablation |
+**한 줄: 이기종 FL에서 지식이 실제로 어디로 흐르는지 밝히고, 그에 맞춘 싼 설계(FedScout)를 제안한다.**
+노벨티는 새 구조가 아니라 발견과 효율에 건다. 정확도는 같은 용량(c8) 기준선을 이기면 충분하고, 표적은 통신·연산·속도·분석이다.
+
+| 주장 | 내용 | 근거 (11-19 현재) | 받치는 실험 |
+|---|---|---|---|
+| C1 지식은 같은 구조끼리만 흐른다 | 증강 없는 HtFL에서 구조 간 채널(prototype, anchor, logit, 생성기)은 Local과 같고, 같은 구조의 가중치 평균만 지식을 옮긴다 | handoff F1·F2 (평균한 쌍둥이 vs 평균하지 않은 쌍둥이 +11) | 3절 Local·HtFL 기준선, 6절 진단 |
+| C2 이기종 private은 지역 클래스 분포만 더한다 | 공유+private 방법의 앙상블 이득은 "공유 모델 + log 지역 클래스 비율"로 거의 다 재현된다 | FedAPEN c8 CIFAR R150: 공유+비율 44.1 ≥ 앙상블 42.2 (private 38.1). FedScout c8 shareall: scout+비율 65.3 ≥ 결합 64.5 (Flowers), 58.8 > 54.4 (CIFAR R280). 개인 head에서 learner 기여 0~0.5 | `APENDiag shared+prior`, `ScoutEval scout_prior` (본 표 run에서 3 seed로 확인) |
+| C3 공유 모델은 암기하고, 기준선도 후반에 떨어진다 | 평균되는 작은 모델은 결국 클라이언트 데이터를 암기한다 | handoff F4 (게이트 train−held-out 0 → 9~11), FedSA Tiny 최고 R60 뒤 하락 (23.92 → R500 22.79) | 6절, 기준선 곡선 |
+| C4 설계 FedScout | 지식 전달은 작은 동종 scout(c8, backbone만 평균, 개인 head)에 맡기고, 이기종 private은 scout 위 잔차(P2)로 두되 scout이 이미 맞히는 샘플은 학습·추론에서 건너뛴다(screening, cascade). 멈춤 규칙 없이 통신량 대비 정확도 곡선으로 보고(patience 게이트는 부록의 자동 기본값) | — | 3절 본 표, 4절 ablation |
+| C5 효율 | 같은 통신량에서 가장 높고, 공유 모델 방식과 같은 정확도를 3~4배 적은 통신으로 낸다. private 학습 샘플 −70%, 추론 때 private 실행 약 25% | c20 개인 head: prototype 500R 예산에서 CIFAR +11.3, Flowers +3.6, Tiny +26.5. FedAPEN c20의 같은 통신량 대비 +7.7~+11.1. c8 Flowers 58.3 @81MB, FedAPEN c8은 282MB 필요 | `docs/figs/comm_vs_acc_draft.*` (`system/comm_vs_acc.py`), 7절 기기 측정 |
+| (부록) | shareall 변형(정확도 더 높음, 통신 2배, FedAvg-FT 패턴과 겹침), 우리 원칙을 FedAPEN에 적용(apenph), I1 배포 변형(원래 모델만 배포), c20 용량 표 | | 4절 |
+
+**위험과 대응**
+- 노벨티: 정확도 대부분이 scout에서 나오고 learner 기여가 작다. 숨기지 않고 C2로 분석의 중심에 둔다. "작은 동종 모델 + FedRep" 반론에는 C1~C3 발견과 C5 효율로 답한다.
+- 우리만 튜닝(scout lr×3, linear projector): apenph(FedAPEN + 우리 원칙), FedScout + pool projector ablation 1 run.
+- 적은 예산(c20 기준 약 25~50MB 이하)에서는 prototype 방식이 앞선다. c8 개인 head 곡선으로 확인하고, 안 되면 주장 범위를 그 이상의 예산으로 한정한다.
+- 본 표에는 500R 최종 정확도와 "같은 통신량에서의 정확도"를 함께 넣는다. Flowers 최종값은 FedAPEN이 통신 3~4배로 앞설 수 있다.
+- IoT 주장에는 Jetson Nano·Raspberry Pi 실측이 필요하다(`system/device_bench.py`).
 
 FedDSA(이중 앵커)는 쓰지 않는다(11-18 사용자 결정). 논문에서도 다루지 않는다.
 
