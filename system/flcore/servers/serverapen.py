@@ -24,5 +24,9 @@ class FedAPEN(FML):
         if d:
             n = sum(x[2] for x in d)
             print(f"APENDiag private={sum(x[0] for x in d) / n:.4f} shared={sum(x[1] for x in d) / n:.4f} "
+                  f"shared+prior={sum(x[4] for x in d) / n:.4f} "
                   f"w_private mean={np.mean([x[3] for x in d]):.3f} min={min(x[3] for x in d):.3f} max={max(x[3] for x in d):.3f}")
+            # per-client private/shared/weight/shared+log local prior, to check whether the ensemble gain is concentrated on a few clients
+            print("APENDiagClient " + " ".join(f"{c.id}:{c.diag[0] / c.diag[2]:.4f}/{c.diag[1] / c.diag[2]:.4f}/{c.diag[3]:.3f}/{c.diag[4] / c.diag[2]:.4f}"
+                                               for c in self.clients if getattr(c, "diag", None)))
         return out
