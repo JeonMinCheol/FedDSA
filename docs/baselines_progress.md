@@ -240,3 +240,12 @@
   - **어느 METHOD를 돌릴지는 63의 판정 뒤 확정한다(11-20 17시 무렵, 이 절에 "확정"으로 적는다).** 그 전에는 `GR=3 RUN=smoke_fs_nc100` smoke만 돌려 오류와 메모리를 확인한다.
   - 걸리는 시간(63 2080 Ti 기준, ariel GPU는 더 빠를 것): 100명 join 0.5 라운드당 약 2~3분(500R 약 19시간), join 0.3 약 12시간, join 0.1 약 5시간, 50명 약 9시간.
   - 결과: run 로그에서 `python comm_vs_acc.py --export <로그> ../docs/figs/data/fedscout_nc<명>jr<참여율>_s<seed>.tsv`로 곡선을 내보내 push. 표에는 seed 평균 곡선 최고값 ± 표준편차.
+
+## 11-20 FedMRL 통신량
+- 공유 모델(CIFARResNet-8 base, 출력 128로 pool + `Linear(128, C)` head)의 float state를 계산 노드에서 셌다(BN 버퍼 포함, `flops.json`의 `*_state_floats`와 같은 기준): C=100: 90,964 / C=102: 91,222 / C=200: 103,864. 라운드당 up+down = 2배. `comm_vs_acc.py`에 `MRL_STATE_FLOATS`와 `FedMRL (c8)` 곡선(회색 묶음, 직접 라벨)을 넣었다. 500R 누적: CIFAR 364 MB, Flowers 365 MB. `--x compute`에서는 FedMRL 공유 모델 FLOPs가 `flops.json`에 없어서 FedMRL을 그리지 않는다.
+
+## 11-20 FedAPEN 원래 방식(작은 공유 모델 전체 전송)으로 재측정 제출 (사용자 지시)
+- 원 논문/코드처럼 공유 모델 전체(c8 본체 + 원래 64×C 분류기)를 FedAvg하는 `FedAPEN_nh`(`--apen_native_head true`)로 바꾼다. 서버 집계는 공유 모델 state 전체(BN 통계 포함) 평균이다. 기존 c8 FedAPEN(pool→512→512×C head)은 참고용으로 남긴다.
+- 본 표 묶음(`GARCH=c8 PREFIX=c8`, seed 0~2): 496016~18(`PACK_PAR=1`)로 냈다가 사용자 지시로 취소하고 `PACK_PAR=2`로 다시 냈다: 496045 CIFAR, 496046 Flowers, 496047 Tiny. 11-18에 같은 조건(묶음 3개 + 병렬 2)에서 FedAPEN이 cuDNN 오류로 죽은 적이 있어서, 첫 묶음 로그를 확인한다. run 이름 `c8_FedAPEN_nh_<dataset>_s<seed>` → TSV `fedapen_nh_c8_<dataset>_s<seed>.tsv`.
+- 클라이언트 수 실험 FedAPEN은 보류했던 494931~34를 취소하고 `FedAPEN_nh`로 다시 냈다(`SERIAL=1`, `max_parallel_clients 4`): 496019 nc50 jr0.5, 496020 nc100 jr0.5, 496021 nc100 jr0.3, 496022 nc100 jr0.1. run 이름 `c8jr<05|03|01>_FedAPEN_nh_Cifar100_<50|100>_s<seed>`.
+- 순서(nice): FedMRL Tiny(494854, 진행 중) → nh 본 표 3개(nice 0) → nh 클라이언트 수 4개(nice 200) → FedMRL 클라이언트 수 4개(494935~38, nice 400).

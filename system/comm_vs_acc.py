@@ -11,6 +11,7 @@ point at its 500R total, from its per-round payload (d = 512 feature dim, C clas
   FedAPEN                   : up + down the shared model's state_dict (c8 + pool to 512 + 512 x C head; flops.json)
   FedAPEN + our findings    : personal head, so only the body is needed (same 78K floats as FedScout / pFedMoE)
   pFedMoE                   : up + down the shared c8 extractor (no head), 78064 state floats like FedScout's count
+  FedMRL                    : up + down the shared c8 model (CIFARResNet-8 base + 128-d Linear head)
 Curve baselines (pFedMoE, FedSA, FedAPEN) are seed TSVs (round, acc %) under docs/figs/data/, exported on the node that ran them:
   python comm_vs_acc.py --export <run log> ../docs/figs/data/pfedmoe_c8_<dataset>_s<seed>.tsv
 Shared-model methods are drawn at the paper's capacity only (c8). Curves are seed means; the band is +-1 seed std
@@ -40,6 +41,8 @@ import numpy as np  # noqa: E402
 D, ROUNDS, NC = 512, 500, 20
 DATA = {"Cifar100": (100, 46.0), "Flowers102": (102, 31.5), "TinyImagenet": (200, 88.8)}  # C, mean classes/client
 FL = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../docs/figs/data/flops.json")))
+# FedMRL c8 global model (CIFARResNet-8 base pooled to 128 + Linear(128, C) head): float state incl. BN buffers, counted like flops.json *_state_floats
+MRL_STATE_FLOATS = {100: 90964, 102: 91222, 200: 103864}
 BASE = {  # 500R, seed-mean curve max (docs/twin_handoff.md section 4); drawn only where no curve TSV exists
     "LG-FedAvg": (40.64, 53.80, 23.64), "FedGH": (39.83, 53.06, 23.19), "FedProto": (38.24, 49.88, 18.24),
     "FedTGP": (44.51, 55.60, 23.20), "FedSA": (44.89, 55.59, 23.88), "FedRG": (41.98, 50.62, 24.15)}  # FedSA C/F re-aggregated (progress log), Tiny = handoff
@@ -60,13 +63,14 @@ CURVE_BASE = [  # label (c8 is the paper default, not repeated in labels), seed 
     ("LG-FedAvg", "../docs/figs/data/lg-fedavg_{d}_s[0-2].tsv", "LG-FedAvg", None),
     ("FedGH", "../docs/figs/data/fedgh_{d}_s[0-2].tsv", "FedGH", None),
     ("FedProto", "../docs/figs/data/fedproto_{d}_s[0-2].tsv", "FedProto", None),
+    ("FedMRL", "../docs/figs/data/fedmrl_c8_{d}_s[0-2].tsv", "FedMRL (c8)", None),  # ariel logs
 ]
 # plain dashes by default; only look-alike color pairs get a second cue (marker or dash pattern):
 # orange FedAPEN / red FedGH, aqua pFedMoE / green FedRG, blue FedScout / violet LG-FedAvg
 STYLE = {"FedAPEN": ("#eb6834", "--", None), "FedAPEN (native head)": ("#eb6834", ":", "D"), "FedAPEN + our findings": ("#eb6834", "-", "D"), "pFedMoE": ("#1baf7a", "--", "v"),
          "FedSA": ("#eda100", "--", None), "FedTGP": ("#e87ba4", "--", None),
          "FedRG": ("#008300", "-.", None), "LG-FedAvg": ("#6250d6", "--", "^"),
-         "FedGH": ("#e34948", ":", "s"), "FedProto": ("#52514e", "-.", None)}
+         "FedGH": ("#e34948", ":", "s"), "FedProto": ("#52514e", "-.", None), "FedMRL": ("#52514e", "--", "o")}
 BUDGET_LINE = "prototype methods, 500R total"
 
 
@@ -76,7 +80,7 @@ def per_round_floats(method, d):
     return {"FedProto": (k + C) * D, "FedTGP": (k + C) * D, "FedSA": (k + C) * D, "FedGH": k * D + head,
             "LG-FedAvg": 2 * head, "FedRG": 2 * k * D, "FedAPEN (c8)": 2 * FL[d]["apen_state_floats"],
             "FedAPEN-ph (c8)": 2 * FL[d]["apen_body_state_floats"], "FedAPEN-nh (c8)": 2 * FL[d]["c8_native_state_floats"],
-            "pFedMoE (c8)": 2 * 78064}[method]
+            "pFedMoE (c8)": 2 * 78064, "FedMRL (c8)": 2 * MRL_STATE_FLOATS[C]}[method]
 
 
 def train_tflops(method, d):
@@ -194,7 +198,7 @@ for j, (d, ax) in enumerate(zip(DATA, axes)):
     curved = set()  # baselines drawn as curves: their 500R point is not drawn again
     for k, (label, pat, floats, color) in enumerate(CURVE_BASE):
         paths = sorted(glob.glob(pat.format(d=d)))
-        if not paths:
+        if not paths or (X == "compute" and label == "FedMRL"):  # shortcut: FedMRL shared-model FLOPs not in flops.json yet
             continue
         per_round = cost(floats, d)
         curved.add(label)
