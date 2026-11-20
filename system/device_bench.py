@@ -25,8 +25,9 @@ usage:
   python device_bench.py --export_onnx onnx_cifar --size 32 --classes 100     (then compile each .onnx to .hef with the
       Hailo Dataflow Compiler on an x86 host and run `hailortcli benchmark <model>.hef` on the device)
 --size 64 --classes 102 for Flowers102, --size 64 --classes 200 for TinyImagenet.
-Energy: on Jetson the script reads tegrastats (POM_5V_IN / VDD_IN) automatically; on a Raspberry Pi use an external
-USB power meter and align it with the printed start/end timestamps.
+Energy: on Jetson the script reads tegrastats (POM_5V_IN / VDD_IN, board input) automatically; on a Raspberry Pi 5 it
+sums the PMIC rails (`vcgencmd pmic_read_adc`, SoC + memory, a lower bound of wall power). For wall power use an
+external USB meter and align it with the printed start/end timestamps.
 """
 import argparse
 import csv
@@ -199,16 +200,28 @@ def export_onnx(archs, out_dir):
         print("wrote", path)
 
 
-# ---- power (Jetson tegrastats) ----
+# ---- power: Jetson tegrastats (board input) or Raspberry Pi 5 PMIC (sum over SoC/memory rails) ----
 class Tegrastats(object):
+    """Jetson: tegrastats POM_5V_IN / VDD_IN (whole-board input). Raspberry Pi 5 without tegrastats: `vcgencmd
+    pmic_read_adc`, power = sum over rails of V x A. The PMIC rails exclude USB peripherals and the 5 V input
+    conversion loss, so the Pi number is a lower bound of wall power (use an external meter for the board total)."""
+
     def __init__(self):
-        self.samples, self.proc = [], None
+        self.samples, self.proc, self.source, self.running = [], None, "none", True
         try:
             self.proc = subprocess.Popen(["tegrastats", "--interval", "100"], stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL, universal_newlines=True)
-        except OSError:
+            self.source = "tegrastats"
+            threading.Thread(target=self._read, daemon=True).start()
             return
-        threading.Thread(target=self._read, daemon=True).start()
+        except OSError:
+            pass
+        try:
+            subprocess.check_output(["vcgencmd", "pmic_read_adc"], stderr=subprocess.DEVNULL)
+            self.source = "pmic"
+            threading.Thread(target=self._pmic, daemon=True).start()
+        except (OSError, subprocess.CalledProcessError):
+            pass
 
     def _read(self):
         for line in self.proc.stdout:
@@ -216,11 +229,20 @@ class Tegrastats(object):
             if m:
                 self.samples.append((time.time(), int(m.group(1)) / 1000.0))
 
+    def _pmic(self):
+        while self.running:
+            out = subprocess.check_output(["vcgencmd", "pmic_read_adc"], universal_newlines=True)
+            amps = dict(re.findall(r"(\S+)_A current\(\d+\)=([0-9.]+)A", out))
+            volts = dict(re.findall(r"(\S+)_V volt\(\d+\)=([0-9.]+)V", out))
+            self.samples.append((time.time(), sum(float(amps[k]) * float(volts[k]) for k in amps if k in volts)))
+            time.sleep(0.1)
+
     def mean_watts(self, t0, t1):
         v = [w for t, w in self.samples if t0 <= t <= t1]
         return sum(v) / len(v) if v else float("nan")
 
     def stop(self):
+        self.running = False
         if self.proc is not None:
             self.proc.terminate()
 
@@ -257,6 +279,7 @@ def main():
     y = torch.randint(0, NUM_CLASSES, (a.batch,), device=dev)
     xi = torch.randn(a.infer_batch, 3, SIZE, SIZE, device=dev)
     power = Tegrastats()
+    print("power source:", power.source)
     sync = (lambda: torch.cuda.synchronize()) if cuda else (lambda: None)
 
     scout = Native("c8").to(dev).train()

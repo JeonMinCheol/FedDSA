@@ -9,6 +9,35 @@
 - 방법 이름 FedScout는 제목에 넣지 않고 초록·본문에서 소개한다("scout"는 처음 보는 독자에게 뜻이 안 통함). IoT는 초록 첫 문장과 키워드로 드러낸다.
 - "Specialize Locally"는 2단계 설계(연합 뒤 로컬 학습)가 통과하면 더 정확해진다.
 
+## 진행 요약 (11-20 저녁 기준, 이 문서의 결정과 남은 계획 한눈에)
+
+**확정된 것**
+| 항목 | 결정 | 근거·위치 |
+|---|---|---|
+| 제목 | Rethinking Knowledge Sharing in Model-Heterogeneous Federated Learning: Share a Tiny Common Model, Specialize Locally | 0절 |
+| 투고처 | IEEE TMC (안 되면 IoT-J). 실기기 평가와 이유 분석 필수 | 메모리, 6절 |
+| 기여 | 진단(어떤 통로로도 private이 공유 + log 비율을 넘지 못함) + 그 진단이 정당화하는 설계 + 효율 | 7절, `docs/related_work.md` |
+| 이론 | 명제 1(label shift: 공유 + log 비율 = 클라이언트별 Bayes 최적), 명제 2(feature shift에서만 private이 필요) | `docs/theory_label_shift.md` |
+| 최종 방법 | 2단계 FedScout: c8 scout(projector 없음) 전체 FedAvg, head lr ×8, R490 동결·개인화, learner는 동결 뒤에만 학습, screening τ 0.5, cascade | 4절. CIFAR 66.05(매 라운드 learner 66.23), 학습 연산 FedAPEN 대비 6.7배 적음 |
+| 보고 규칙 | 동결 뒤 로컬 학습은 통신 0이므로 "490R 연합 + E 로컬 epoch"로 따로 표시(그림은 점선) | 8절 |
+| 기준선 | 원 논문 lr. 공유 모델 방식은 c8 | 메모리 |
+| 기기 | Raspberry Pi 5(CPU 학습), Jetson Nano(저사양 GPU), Jetson Orin Nano Super(GPU), Hailo-8(NPU 추론) | 기기 실측 절 |
+
+**진행 중 (11-20 저녁)**
+| 실험 | 판정 | 예상 |
+|---|---|---|
+| 이유 분석 B·C·D: FedAPEN `an_*` 6개(클래스 빈도 3분위, Dir α 0.3/1.0, IID, feature shift, 보정 강도 τ) | 8절 사전 등록 기준 | 20~21시 |
+| feature shift에서 2단계 FedScout(`lafsa8_*fs`)와 매 라운드 learner 상한(`npsa8_*fs`) | 데이터 양 vs label shift 설명 | 18시 / 21시 |
+| Flowers 동결 뒤 로컬 50·100 epoch(`lafsa8L*`) | 로컬 epoch 수 E 결정 | 19시 반 |
+| 기기: Pi 5 64px·r101/r152, Jetson Nano 전체 | 기기 표 완성 | 오늘 밤 |
+
+**남은 계획 (순서대로)**
+1. E 결정 → 최종 구성으로 본 표 Tiny × 3 seed, ablation 재정의(평균 없음, 동결 시점, 개인 head, head lr ×1), 일반화(HtFE 2/3/4/5/9, lowend), 클라이언트 수(ariel a2019102224 `METHOD=FedScout_sa`), 로컬 에폭은 맨 마지막.
+2. 그림 3종의 OURS를 `lafsa8`로 교체, 로컬 구간 점선, 효율 표(FLOPs + 기기 시간·에너지·가장 느린 클라이언트).
+3. 이유 분석 결과로 상한 분석 그림("어떤 통로도 공유 + 비율을 넘지 못함")과 τ 그림.
+4. Hailo: Dataflow Compiler가 있는 서버에서 ONNX → HEF 컴파일 후 추론·cascade 지연 측정(서버 위치 확인 필요). J7-C 전력계로 벽 전력 재측정(현재 블루투스 연결 안 됨).
+5. 가장 가까운 논문 본문 정독(PersFL, ProxyFL, FedType, FedRoD, Xu & Huang, FedTopo) → 원고 작성.
+
 ## 1. 한 줄
 
 **이기종 FL에서 지식이 실제로 어디로 흐르는지 밝히고, 그에 맞춘 싼 설계(FedScout)를 제안한다.**
@@ -138,3 +167,18 @@ FedAPEN c8 native head(본 표 버전), seed 0, 500R, 나머지 프로토콜 동
   - 지금 최종 구성(lafsa8)도 마지막 10라운드는 로컬 단계다 → "490R 연합 + 10 로컬 epoch"로 표기한다.
 - **실험**: `lafsa8L{50,100}_Flowers102_s{0-2}` = lafsa8 + `-gr 540/590` (동결은 그대로 R490, 동결 뒤 50/100 로컬 epoch).
 - 예측(사전): learner 기여가 npsa8(+1.28)에 가까워지고, 최종 정확도가 npsa8(70.15)과 0.5 이내. 폐기 기준: 100 epoch에서도 기여 ≤ +0.3이면 step 수가 아니라 연합 중 공동 학습이 중요하다는 뜻.
+
+
+### 기기 실측 1차 (11-20 17시 반, 연구실 IoT 기기, 측정은 Claude가 원격 실행)
+- 기기: Jetson Orin Nano Super(jetson3, GPU, tegrastats VDD_IN = 보드 입력 전력), Raspberry Pi 5(master, CPU 4코어, 전력은 PMIC 레일 합 = SoC + 메모리, 벽 전력의 하한). 배치 32, `system/device_bench.py`(최종 구성), 원자료 `docs/figs/data/device/*.csv`, 조합 `system/device_compose.py`.
+- 조합: 클라이언트 i는 HtFE-img-8의 i % 8 모델, 지역 데이터 수는 실제 분할(`flops.json` n_train), 500R·1 epoch. FedScout 2단계 = 490 × scout 학습 + 10 × 동결 뒤 learner(screening 30%).
+
+| 기기·데이터 | FedScout 2단계 | 매 라운드 learner | FedAPEN | private만 학습 (LG/Proto/TGP/SA) |
+|---|---|---|---|---|
+| Orin, CIFAR: 클라이언트 평균 시간 / 가장 느린 클라이언트 / 평균 에너지 | 0.18 h / 0.22 h / 4.8 kJ | 0.96 h / 2.68 h / 31.8 kJ | 0.98 h / 2.62 h / 32.4 kJ | 0.82 h / 2.46 h / 27.4 kJ |
+| Orin, Flowers | 0.04 h / 0.04 h / 1.5 kJ | 0.14 h / 0.38 h / 7.5 kJ | 0.14 h / 0.38 h / 7.7 kJ | 0.11 h / 0.35 h / 5.9 kJ |
+| Pi 5, CIFAR (r101·r152 클라이언트 4명 제외, 측정 중) | 2.40 h / 2.81 h / 35.9 kJ | 14.17 h / 33.27 h / 258 kJ | 14.46 h / 33.88 h / 290 kJ | 12.34 h / 31.76 h / 256 kJ |
+
+- 읽는 법: 평균 시간 기준 FedAPEN 대비 Orin 5.4배(CIFAR)·3.8배(Flowers), Pi 6.0배. **가장 느린 클라이언트 기준(연합 라운드 시간을 정하는 낙오자)은 약 12배**: 연합 단계에서는 모든 기기가 같은 c8만 학습하므로 모델 이질성이 라운드 시간에 영향을 주지 않는다.
+- GPU(Orin)에서는 배치 32가 작아 screening(30%)이 learner 한 step 시간을 거의 줄이지 못한다(r18 42.5 ms vs 전체 37.0 ms). 절감은 연합 중 learner를 학습하지 않는 데서 나온다. CPU(Pi)에서는 screening이 step 시간을 약 절반으로 줄인다(r18 729 vs 1495 ms).
+- 남은 것: Pi 64px·r101/r152(진행 중), Hailo 추론(컴파일러 위치 확인 필요), J7-C 전력계(블루투스 연결 안 됨), Jetson Nano(PyTorch 없음).
