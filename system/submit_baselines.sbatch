@@ -61,7 +61,7 @@ CMD=("${PYTHON_BIN}" -u main.py
   "${DATA_ARGS[@]}" "${METHOD_ARGS[@]}")
 # GPU 하나에 run 3개를 같이 올릴 때만 MAX_PAR=2 (사용자 지시)
 # 클라이언트 수 실험(SERIAL, GPU에 run 하나)만 4 (사용자 지시 11-19). 묶음은 cuDNN 오류 이력 때문에 1 유지
-[[ -n "${SERIAL:-}" && "${METHOD}" != FedScout* ]] && MAX_PAR=4  # FedScout: 1 (never tested with client threads)
+[[ -n "${SERIAL:-}" ]] && MAX_PAR=4  # FedScout too (user 11-20); its client threads are first exercised in the ariel smoke
 [[ -n "${MAX_PAR:-}" ]] && CMD+=(--max_parallel_clients "${MAX_PAR}")
 
 mkdir -p logs
