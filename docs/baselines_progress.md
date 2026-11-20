@@ -256,6 +256,7 @@
 - 본 표 묶음(`GARCH=c8 PREFIX=c8`, seed 0~2): 496016~18(`PACK_PAR=1`)로 냈다가 사용자 지시로 취소하고 `PACK_PAR=2`로 다시 냈다: 496045 CIFAR, 496046 Flowers, 496047 Tiny. 11-18에 같은 조건(묶음 3개 + 병렬 2)에서 FedAPEN이 cuDNN 오류로 죽은 적이 있어서, 첫 묶음 로그를 확인한다. run 이름 `c8_FedAPEN_nh_<dataset>_s<seed>` → TSV `fedapen_nh_c8_<dataset>_s<seed>.tsv`.
 - 클라이언트 수 실험 FedAPEN은 보류했던 494931~34를 취소하고 `FedAPEN_nh`로 다시 냈다(`SERIAL=1`, `max_parallel_clients 4`): 496019 nc50 jr0.5, 496020 nc100 jr0.5, 496021 nc100 jr0.3, 496022 nc100 jr0.1. run 이름 `c8jr<05|03|01>_FedAPEN_nh_Cifar100_<50|100>_s<seed>`.
 - 순서(nice): FedMRL Tiny(494854, 진행 중) → nh 본 표 3개(nice 0) → nh 클라이언트 수 4개(nice 200) → FedMRL 클라이언트 수 4개(494935~38, nice 400).
+- 11-20 1000R 요청 접수 (사용자 결정: 본 표와 같은 `FedAPEN_nh`로): 496254 CIFAR, 496255 Flowers, 496256 Tiny. `METHOD=FedAPEN_nh GARCH=c8 GR=1000 SEED=0 PREFIX=long`, 단독 잡(`max_parallel_clients` 기본 1), nice 600으로 큐 맨 뒤. run 이름 `long_FedAPEN_nh_<데이터셋>_s0` → TSV는 `fedapen_nh_c8_1000R_<데이터셋>_s0.tsv`로 내보낸다(요청서의 `fedapen_c8_1000R_*`과 이름이 다르다).
 
 ### 11-20 15:50 FedScout 클라이언트 수 실험 나누기 (사용자 지시)
 a2019102224 계정 혼자 12개를 다 돌리면 GPU 1개로 차례대로 돌아서 11/25~28에 끝난다. 그래서 설정 단위로 나눈다(seed 0~2는 같은 계정에서 돌려 seed 간 GPU 차이를 줄인다).
@@ -288,3 +289,6 @@ a2019102224 계정 혼자 12개를 다 돌리면 GPU 1개로 차례대로 돌아
 - 원인: 캐시(배치 256)와 자체 점검(64개)이 서로 다른 cuDNN 알고리즘을 쓰고, Ampere의 TF32 때문에 최대 1.5e-3(중앙값 8.3e-4, feature 최대 약 2.5) 차이가 난다. 점검의 `atol=1e-4`가 너무 빡빡했다. 2080 Ti(TF32 없음)에서는 드러나지 않는다. 캐시 자체는 맞다.
 - 수정: `clientscout.py` 점검을 `atol=1e-2`로 넓혔다(어긋난 행은 O(1) 차이). 오차를 로그에 남기도록 고친 smoke(496569, A5000)는 75 클라이언트 모두 통과했고 exit 0, GPU 14.2 GB, 4라운드(매 라운드 평가) 470 s.
 - n1mb0606도 ariel에서 FedScout를 돌리므로 이 커밋 이후 코드를 쓴다.
+- **11-20 18:10 FedAPEN_nh 묶음 + `max_parallel_clients 2`가 멈춤**: 496045(CIFAR, ariel-v5 A5000)가 15:51 시작 후 R0 평가(15:54)까지만 찍고 2시간 넘게 로그가 없었다. 세 프로세스 모두 GPU 100%, CPU 100%로 살아 있었다(오류 메시지 없음). 11-18 cuDNN 오류 때 "같은 GPU의 다른 run이 멈춤"과 같은 모양이다. 로그는 `logs/c8_FedAPEN_nh_Cifar100_s{0,1,2}.hang-496045.out`.
+  - 조치: 496045~47 취소, `PACK_PAR=1`로 다시 제출: 496566 CIFAR, 496567 Flowers, 496568 Tiny. 취소하는 사이 클라이언트 수 잡 496019(nc50 jr0.5, `SERIAL`, mp4)가 먼저 GPU를 잡아 ariel-v2에서 시작했다. 이 잡이 끝나면 묶음이 이어진다.
+- 11-20 n1mb0606 FedScout 클라이언트 수 제출 (사용자 지시, 큐 맨 뒤 nice 800, `da085ee` 이후 코드): 496621 nc100 jr0.3, 496622 nc50 jr0.5. `METHOD=FedScout_sa GARCH=c8 SERIAL=1`(seed 0→1→2, `max_parallel_clients 4`). run 이름 `fsjr03_FedScout_sa_Cifar100_100_s<seed>`, `fsjr05_FedScout_sa_Cifar100_50_s<seed>` → TSV `fedscout_nc100jr0.3_s<seed>.tsv`, `fedscout_nc50jr0.5_s<seed>.tsv`.
