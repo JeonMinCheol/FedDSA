@@ -44,8 +44,9 @@ case "${METHOD}" in
   # FedScout final config (11-20): c8 scout without projector, realign off, no gate freeze.
   # _sa = head averaged, personalized at R490; _ph = personal head. 100 clients need about 18 GB (fits a 24 GB 3090);
   # on a smaller GPU add --keep_client_models_on_gpu false (models parked in host memory between turns)
+  # 11-20 evening, final: _sa adds head lr x8 and the 2-stage schedule (learner trains only after the R490 freeze)
   FedScout_sa) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
-                            --scout_share all --scout_freeze_at 490) ;;
+                            --scout_share all --scout_freeze_at 490 --scout_head_lr_scale 8 --scout_learner_after_freeze true) ;;
   FedScout_ph) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
                             --scout_share backbone) ;;
   FedMRL)      METHOD_ARGS=(-algo FedMRL --global_arch "${GARCH}") ;;

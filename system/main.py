@@ -826,6 +826,9 @@ if __name__ == "__main__":
     parser.add_argument('--scout_head_lr_scale', type=float, default=1.0,
                         help="FedScout: scout projector/head lr = scout lr x this (8 ~ the pool projector's effective head step "
                              "for a 64-d c8 head under -fd 512)")
+    parser.add_argument('--scout_learner_after_freeze', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedScout: train the residual learner only after the freeze (while federating, only the scout trains; "
+                             "the learner would mostly learn the local class prior there, see the scout_prior diagnostic)")
     parser.add_argument('--scout_width', type=float, default=1.0, help="FedScout: channel multiplier of the scout")
     parser.add_argument('--scout_lr_scale', type=float, default=3.0, help="FedScout: scout lr = local lr x this")
     parser.add_argument('--scout_wd', type=float, default=0.0, help="FedScout: scout weight decay")
@@ -858,6 +861,9 @@ if __name__ == "__main__":
     parser.add_argument('--apen_native_head', type=str2bool, nargs='?', const=True, default=False,
                         help="FedAPEN: the shared model keeps its own classifier on its native features (no pool to -fd and "
                              "-fd x C head); FedAPEN mixes only logits, so nothing needs the common feature size")
+    parser.add_argument('--apen_dump_perclass', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedAPEN: write per-client per-class correct counts (private, shared, shared+prior, ensemble) and "
+                             "local train class counts to logs/<goal>_perclass.json at every evaluation")
     parser.add_argument('--apen_personal_head', type=str2bool, nargs='?', const=True, default=False,
                         help="FedAPEN: keep the shared model's head per client (only its body is averaged)")
     parser.add_argument('--fedsa_cm_server_lr', type=float, default=1.0,

@@ -1,27 +1,36 @@
-"""On-device cost of one local training step (Jetson Nano / Raspberry Pi / any CPU or GPU).
+"""On-device cost of FedScout's local work and the baselines' (Raspberry Pi / Jetson Nano / any CPU or GPU),
+plus ONNX export of the inference models for a Hailo NPU (inference only; Hailo cannot train).
 
 Standalone on purpose: copy this single file to the device. Needs only torch + torchvision
 (Python 3.6 / torch 1.10 compatible, so it also runs in the Jetson Nano l4t-pytorch container).
 
-Each workload is one SGD step on a synthetic CIFAR-shaped batch (3x32x32, 100 classes); timing does not depend on
-pixel values. Workloads mirror the training code (system/flcore/clients/clientsa.py, final config):
-  local         private fwd+bwd                              (= Local; also the device cost of FedProto/FedTGP)
-  fedapen       private + shared twin, both fwd+bwd          (= FedAPEN/FML-style shared model)
-  ours_pre      private on CE(teacher_twin + private) + twin fwd+bwd + frozen-teacher fwd   (before the gate freezes)
-  ours_post     same after the freeze: twin backbone frozen (fwd only), projector/head still train
-  ours_cache    after the freeze with cached twin features (no twin backbone at all)
-  ours_gate_K   ours_pre where the private model only sees K% of the batch (twin-gated private training)
-  realign       one head-realignment step (twin backbone fwd, projector/head fwd+bwd); runs once per round epoch
-  twin_train    the twin alone, fwd+bwd
+Final FedScout (11-20, docs/paper_story.md section 4): c8 scout and private learners without projector (each model's
+own classifier), scout averaged for 490 rounds while the learner does not train, then the learner trains locally
+(no communication) on the samples the frozen scout is unsure of. Training workloads (one SGD step on a synthetic
+batch; timing does not depend on pixel values), mirroring system/flcore/clients/clientscout.py:
+  scout_train        c8 scout fwd+bwd                    (FedScout rounds 1-490: the device's only federated work)
+  learner_post_kK    frozen scout fwd (all samples) + learner fwd+bwd on K% of the batch (local stage after the freeze;
+                     the logged screening fraction is about 30%, so K=30 is the representative one)
+  every_round_kK     scout fwd (teacher) + learner fwd+bwd on K% + scout fwd+bwd (learner trained every round, npsa8)
+  local              private fwd+bwd                     (per-round device cost of LG-FedAvg / FedProto / FedTGP / FedSA)
+  fedapen            private + c8 fwd+bwd + ensemble CE  (FedAPEN)
+Inference workloads (eval, no grad, --infer_batch, default 1 = latency):
+  infer_scout, infer_private      cascade latency = infer_scout + (fraction the scout is unsure of) x infer_private
+Total device training time of a run = epochs x (local samples / batch) x ms_per_step, e.g. FedScout
+  490 x n/B x scout_train + E_local x n/B x learner_post_k30   vs   FedAPEN 500 x n/B x fedapen.
 
 usage:
-  python device_bench.py --device cuda --archs cnn,mnv2,gnet,r18 --batch 32 --steps 20 --out nano.csv
-  python device_bench.py --device cpu  --archs cnn,mnv2 --batch 32 --steps 10 --out pi.csv
+  python device_bench.py --device cuda --archs cnn,mnv2,gnet,r18 --size 32 --classes 100 --out nano_cifar.csv
+  python device_bench.py --device cpu  --archs cnn,mnv2,gnet,r18 --size 32 --classes 100 --steps 10 --out pi_cifar.csv
+  python device_bench.py --export_onnx onnx_cifar --size 32 --classes 100     (then compile each .onnx to .hef with the
+      Hailo Dataflow Compiler on an x86 host and run `hailortcli benchmark <model>.hef` on the device)
+--size 64 --classes 102 for Flowers102, --size 64 --classes 200 for TinyImagenet.
 Energy: on Jetson the script reads tegrastats (POM_5V_IN / VDD_IN) automatically; on a Raspberry Pi use an external
 USB power meter and align it with the printed start/end timestamps.
 """
 import argparse
 import csv
+import os
 import re
 import resource
 import subprocess
@@ -33,7 +42,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
-NUM_CLASSES, FEAT_DIM = 100, 512  # CIFAR-100, FedSA projector width (-fd 512)
+NUM_CLASSES, SIZE = 100, 32  # set from --classes / --size in main()
 
 
 # ---- models (copied from system/flcore/trainmodel/models.py) ----
@@ -88,7 +97,8 @@ class FedAvgCNN(nn.Module):
 def backbone(arch):
     """architecture with its classifier removed, and the classifier's input width"""
     tv = torchvision.models
-    m = {"cnn": lambda: FedAvgCNN(NUM_CLASSES),
+    sp = ((SIZE - 4) // 2 - 4) // 2  # FedAvgCNN flatten size (main.fedavg_cnn_input_dim)
+    m = {"cnn": lambda: FedAvgCNN(NUM_CLASSES, dim=64 * sp * sp),
          # the repo's mobilenet_v2 is torchvision's topology with `fc` instead of `classifier`; same compute
          "mnv2": lambda: tv.mobilenet_v2(num_classes=NUM_CLASSES),
          "gnet": lambda: tv.googlenet(num_classes=NUM_CLASSES, aux_logits=False, init_weights=False),
@@ -108,27 +118,23 @@ def backbone(arch):
     return net, dim
 
 
-class Split(nn.Module):
-    """BaseHeadSplit with the linear projector: backbone -> Linear(dim, 512) -> head Linear(512, classes)"""
+class Native(nn.Module):
+    """BaseHeadSplit with --fedsa_projector native (FedScout --scout_projector none): backbone -> own classifier"""
 
     def __init__(self, arch):
         super().__init__()
         self.backbone, dim = backbone(arch)
-        self.proj = nn.Linear(dim, FEAT_DIM)
-        self.head = nn.Linear(FEAT_DIM, NUM_CLASSES)
-
-    def top(self, f):
-        return self.head(self.proj(torch.flatten(f, 1)))
+        self.head = nn.Linear(dim, NUM_CLASSES)
 
     def forward(self, x):
-        return self.top(self.backbone(x))
+        return self.head(torch.flatten(self.backbone(x), 1))
 
 
-# ---- workloads: each is one optimizer step ----
-def make_workloads(priv, twin, teacher, x, y, feat):
+# ---- workloads: each is one optimizer step (training) or one forward (inference) ----
+def make_workloads(priv, scout, x, y):
     ce = F.cross_entropy
     opt_p = torch.optim.SGD(priv.parameters(), lr=0.01)
-    opt_t = torch.optim.SGD(twin.parameters(), lr=0.03)
+    opt_s = torch.optim.SGD(scout.parameters(), lr=0.03)
 
     def step(loss, opts):
         for o in opts:
@@ -137,44 +143,60 @@ def make_workloads(priv, twin, teacher, x, y, feat):
         for o in opts:
             o.step()
 
+    def sub(k):
+        return max(2, int(round(k * x.shape[0])))  # BatchNorm in train mode needs >= 2 samples
+
+    def scout_train():
+        step(ce(scout(x), y), [opt_s])
+
+    def learner_post(k):
+        scout.eval()
+        with torch.no_grad():
+            t = scout(x)  # screening needs the frozen scout on every sample
+        scout.train()
+        m = sub(k)
+        step(ce(priv(x[:m]) + t[:m], y[:m]), [opt_p])
+
+    def every_round(k):
+        scout.eval()
+        with torch.no_grad():
+            t = scout(x)  # the received scout as teacher
+        scout.train()
+        m = sub(k)
+        step(ce(priv(x[:m]) + t[:m], y[:m]) + ce(scout(x), y), [opt_p, opt_s])
+
     def local():
         step(ce(priv(x), y), [opt_p])
 
     def fedapen():
-        lp, lt = priv(x), twin(x)
+        lp, ls = priv(x), scout(x)
         w = 0.2  # learned ensemble weight; its cost is negligible
-        step(ce(lp, y) + ce(lt, y) + ce((1 - w) * lt.detach() + w * lp, y), [opt_p, opt_t])
+        step(ce(lp, y) + ce(ls, y) + ce((1 - w) * ls.detach() + w * lp, y), [opt_p, opt_s])
 
-    def ours_pre(k=1.0):
-        with torch.no_grad():
-            t = teacher(x)
-        m = max(2, int(round(k * x.shape[0])))
-        step(ce(priv(x[:m]) + t[:m], y[:m]) + ce(twin(x), y), [opt_p, opt_t])
-
-    def ours_post():
-        with torch.no_grad():
-            t = teacher(x)
-            f = twin.backbone(x)  # frozen backbone (eval BN)
-        step(ce(priv(x) + t, y) + ce(twin.top(f), y), [opt_p, opt_t])
-
-    def ours_cache():
-        with torch.no_grad():
-            t = teacher.top(feat)
-        step(ce(priv(x) + t, y) + ce(twin.top(feat), y), [opt_p, opt_t])
-
-    def realign():
-        with torch.no_grad():
-            f = twin.backbone(x)
-        step(ce(twin.top(f), y), [opt_t])
-
-    def twin_train():
-        step(ce(twin(x), y), [opt_t])
-
-    w = {"local": local, "fedapen": fedapen, "ours_pre": ours_pre, "ours_post": ours_post, "ours_cache": ours_cache,
-         "realign": realign, "twin_train": twin_train}
-    for k in (60, 40, 20):
-        w["ours_gate_%d" % k] = (lambda k=k: ours_pre(k / 100.0))
+    w = {"scout_train": scout_train, "local": local, "fedapen": fedapen}
+    for k in (100, 30):
+        w["learner_post_k%d" % k] = (lambda k=k: learner_post(k / 100.0))
+    w["every_round_k85"] = lambda: every_round(0.85)  # npsa8 logs 74-97% of samples for the learner
     return w
+
+
+def make_infer(priv, scout, xi):
+    def run(m):
+        m.eval()
+        with torch.no_grad():
+            m(xi)
+    return {"infer_scout": lambda: run(scout), "infer_private": lambda: run(priv)}
+
+
+def export_onnx(archs, out_dir):
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+    xi = torch.randn(1, 3, SIZE, SIZE)
+    for arch in ["c8"] + archs:
+        m = Native(arch).eval()
+        path = os.path.join(out_dir, "%s_%dpx_%dcls.onnx" % ("scout_c8" if arch == "c8" else arch, SIZE, NUM_CLASSES))
+        torch.onnx.export(m, xi, path, opset_version=11, input_names=["input"], output_names=["logits"])
+        print("wrote", path)
 
 
 # ---- power (Jetson tegrastats) ----
@@ -204,17 +226,26 @@ class Tegrastats(object):
 
 
 def main():
+    global NUM_CLASSES, SIZE
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--archs", default="cnn,mnv2,gnet,r18")
-    ap.add_argument("--twin", default="c20")
-    ap.add_argument("--workloads", default="local,fedapen,ours_pre,ours_post,ours_cache,ours_gate_60,ours_gate_40,realign,twin_train")
-    ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--size", type=int, default=32, help="input side: 32 CIFAR-100, 64 Flowers102 / TinyImagenet")
+    ap.add_argument("--classes", type=int, default=100)
+    ap.add_argument("--workloads", default="scout_train,learner_post_k30,learner_post_k100,every_round_k85,local,fedapen,"
+                                           "infer_scout,infer_private")
+    ap.add_argument("--batch", type=int, default=32, help="training batch")
+    ap.add_argument("--infer_batch", type=int, default=1, help="inference batch (1 = per-sample latency)")
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=3)
     ap.add_argument("--threads", type=int, default=0, help="CPU threads (0 = torch default)")
+    ap.add_argument("--export_onnx", default="", help="write ONNX models for the Hailo compiler into this dir and exit")
     ap.add_argument("--out", default="device_bench.csv")
     a = ap.parse_args()
+    NUM_CLASSES, SIZE = a.classes, a.size
+    if a.export_onnx:
+        export_onnx(a.archs.split(","), a.export_onnx)
+        return
     if a.threads > 0:
         torch.set_num_threads(a.threads)
     dev = torch.device(a.device)
@@ -222,24 +253,23 @@ def main():
     if cuda:
         torch.backends.cudnn.benchmark = True
     torch.manual_seed(0)
-    x = torch.randn(a.batch, 3, 32, 32, device=dev)
+    x = torch.randn(a.batch, 3, SIZE, SIZE, device=dev)
     y = torch.randint(0, NUM_CLASSES, (a.batch,), device=dev)
+    xi = torch.randn(a.infer_batch, 3, SIZE, SIZE, device=dev)
     power = Tegrastats()
     sync = (lambda: torch.cuda.synchronize()) if cuda else (lambda: None)
 
-    twin, teacher = Split(a.twin).to(dev).train(), Split(a.twin).to(dev).eval()
-    with torch.no_grad():
-        feat = twin.backbone.eval()(x).detach()
-    twin.train()
-    print("twin %s backbone params %d (upload = download = %.2f MB fp32 per round)"
-          % (a.twin, sum(p.numel() for p in twin.backbone.parameters()),
-             4 * sum(v.numel() for v in twin.backbone.state_dict().values() if v.is_floating_point()) / 1e6))
+    scout = Native("c8").to(dev).train()
+    print("scout c8 (no projector) params %d (upload = download = %.3f MB fp32 per round, whole model)"
+          % (sum(p.numel() for p in scout.parameters()),
+             4 * sum(v.numel() for v in scout.state_dict().values() if v.is_floating_point()) / 1e6))
     rows = []
     for arch in a.archs.split(","):
-        priv = Split(arch).to(dev).train()
-        works = make_workloads(priv, twin, teacher, x, y, feat)
+        priv = Native(arch).to(dev).train()
+        works = make_workloads(priv, scout, x, y)
+        works.update(make_infer(priv, scout, xi))
         for name in a.workloads.split(","):
-            if name in ("twin_train", "realign") and rows and any(r["workload"] == name for r in rows):
+            if name in ("scout_train", "infer_scout") and any(r["workload"] == name for r in rows):
                 continue  # does not depend on the private architecture
             fn = works[name]
             try:
@@ -265,13 +295,14 @@ def main():
             sd = (sum((1000 * t - ms) ** 2 for t in times) / max(1, len(times) - 1)) ** 0.5
             mem = torch.cuda.max_memory_allocated() / 2 ** 20 if cuda else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
             watts = power.mean_watts(t0, t1)
-            r = {"device": a.device, "arch": arch if name not in ("twin_train", "realign") else "-", "twin": a.twin,
-                 "workload": name, "batch": a.batch, "ms_per_step": round(ms, 1), "ms_std": round(sd, 1),
-                 "samples_per_s": round(1000 * a.batch / ms, 1), "peak_mem_MB": round(mem, 1),
+            nb = a.infer_batch if name.startswith("infer") else a.batch
+            r = {"device": a.device, "arch": arch if name not in ("scout_train", "infer_scout") else "-", "size": SIZE,
+                 "classes": NUM_CLASSES, "workload": name, "batch": nb, "ms_per_step": round(ms, 1), "ms_std": round(sd, 1),
+                 "samples_per_s": round(1000 * nb / ms, 1), "peak_mem_MB": round(mem, 1),
                  "avg_power_W": round(watts, 2), "energy_J_per_step": round(watts * ms / 1000, 3),
                  "t_start": round(t0, 1), "t_end": round(t1, 1)}
             rows.append(r)
-            print("%-5s %-13s %8.1f ms/step (+-%.1f)  %7.1f samples/s  mem %7.1f MB  %5.2f W"
+            print("%-5s %-17s %8.1f ms/step (+-%.1f)  %7.1f samples/s  mem %7.1f MB  %5.2f W"
                   % (r["arch"], name, ms, sd, r["samples_per_s"], mem, watts))
         del priv
         if cuda:

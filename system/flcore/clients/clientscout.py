@@ -37,6 +37,9 @@ class clientScout(Client):
         # scout projector/head lr = scout lr x this (8 matches the pool projector: 64 features repeated 8 times into a
         # 512 x C head act like one 64 x C head trained with an 8x larger step)
         self.head_lr_scale = float(args.scout_head_lr_scale)
+        # while the scout is federated its (averaged) head is never confident on my data, so screening keeps ~95% of
+        # the samples and the learner mostly learns my class prior; with this, the learner waits until the freeze
+        self.learner_after_freeze = bool(args.scout_learner_after_freeze)
         self.wd = float(args.scout_wd)
         self.val = float(args.scout_val)
         self.residual = args.scout_residual  # p2: learner only through the sum; i1: + standalone CE + KL to the scout
@@ -99,12 +102,28 @@ class clientScout(Client):
         model.train()
         sums = {"task_loss": 0.0, "train_acc": 0.0, "priv_frac": 0.0, "nan_skip": 0.0}
         nb = 0
+        skip_l = self.learner_after_freeze and not self.frozen
         for _ in range(self.local_epochs):
             for x, y, *ix in trainloader:
                 x, y = self._to(x, y)
                 if self.augment:  # standard crop + flip, only for the augmentation-scope experiment (off by default)
                     x = augment_batch(x)
                 f = self._feat_cache[ix[0].to(self._feat_cache.device)] if ix else None
+                if skip_l:  # --scout_learner_after_freeze: only the scout trains (no teacher pass, no learner pass)
+                    if fixed:
+                        continue
+                    out_s = sc.head(sc.base(x) if f is None else sc.base[1:](f))
+                    loss_s = self.loss(out_s, y)
+                    if not bool(torch.isfinite(loss_s)):
+                        continue
+                    opt_s.zero_grad(set_to_none=True)
+                    loss_s.backward()
+                    opt_s.step()
+                    with torch.no_grad():
+                        sums["task_loss"] += float(loss_s)
+                        sums["train_acc"] += float(out_s.argmax(1).eq(y).float().mean())
+                    nb += 1  # priv_frac stays 0: the learner did not run
+                    continue
                 with torch.no_grad():
                     t_logits = teacher.head(teacher.base(x) if f is None else teacher.base[1:](f)).float()
                 keep = None

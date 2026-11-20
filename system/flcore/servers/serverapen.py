@@ -34,4 +34,10 @@ class FedAPEN(FML):
             # per-client private/shared/weight/shared+log local prior, to check whether the ensemble gain is concentrated on a few clients
             print("APENDiagClient " + " ".join(f"{c.id}:{c.diag[0] / c.diag[2]:.4f}/{c.diag[1] / c.diag[2]:.4f}/{c.diag[3]:.3f}/{c.diag[4] / c.diag[2]:.4f}"
                                                for c in self.clients if getattr(c, "diag", None)))
+            if getattr(self.args, "apen_dump_perclass", False):  # per-client per-class counts, last eval kept (analysis)
+                import json
+                out_p = f"logs/{self.args.goal}_perclass.json"
+                json.dump({"round": len(self.rs_test_acc) - 1,
+                           "clients": {c.id: c.diag_cls for c in self.clients if getattr(c, "diag_cls", None)}},
+                          open(out_p, "w"))
         return out

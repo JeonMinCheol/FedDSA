@@ -106,11 +106,22 @@ class clientAPEN(clientFML):
             ys = torch.as_tensor([int(y) for _, y in self.train_part])
             self._log_prior = torch.bincount(ys, minlength=self.num_classes).float().clamp_min(1).log().to(self.device)
         y_prob, y_true = [], []
+        C = self.num_classes
+        # per-class correct counts of private / shared / shared+prior / ensemble, for the class-frequency analysis
+        # (which local classes does the private model actually help on?)
+        taus = (0.5, 1.5, 2.0, 3.0)  # g + tau * log prior; label-shift Bayes adjustment predicts tau = 1 (shared_prior)
+        cls = {k: torch.zeros(C, dtype=torch.long) for k in ("n", "private", "shared", "shared_prior", "ensemble")
+               + tuple(f"tau{t}" for t in taus)}
         with torch.no_grad():
             for x, y in self.load_test_data():
                 x, y = x.to(self.device), y.to(self.device)
                 p, g = model(x), global_model(x)
                 output = wp * p + (1 - wp) * g
+                yc = y.cpu()
+                cls["n"] += torch.bincount(yc, minlength=C)
+                for k, z in ((("private", p), ("shared", g), ("shared_prior", g + self._log_prior), ("ensemble", output))
+                             + tuple((f"tau{t}", g + t * self._log_prior) for t in taus)):
+                    cls[k] += torch.bincount(yc[(z.argmax(1) == y).cpu()], minlength=C)
                 cp += int((p.argmax(1) == y).sum())  # diagnostics: private alone / shared alone
                 cg += int((g.argmax(1) == y).sum())
                 cgp += int(((g + self._log_prior).argmax(1) == y).sum())  # shared + log local prior: is the gain a prior fix?
@@ -119,5 +130,7 @@ class clientAPEN(clientFML):
                 y_prob.append(output.cpu().numpy())
                 y_true.append(label_binarize(y.cpu().numpy(), classes=np.arange(self.num_classes)))
         self.diag = (cp, cg, test_num, wp, cgp)
+        self.diag_cls = {k: v.tolist() for k, v in cls.items()}
+        self.diag_cls["train_n"] = torch.bincount(torch.as_tensor([int(y) for _, y in self.train_part]), minlength=C).tolist()
         auc = metrics.roc_auc_score(np.concatenate(y_true), np.concatenate(y_prob), average='micro')
         return test_acc, test_num, auc
