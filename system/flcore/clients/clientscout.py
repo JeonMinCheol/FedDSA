@@ -35,6 +35,7 @@ class clientScout(Client):
         self.val = float(args.scout_val)
         self.residual = args.scout_residual  # p2: learner only through the sum; i1: + standalone CE + KL to the scout
         self.screen_tau = float(args.scout_screen_tau)
+        self.eval_ft = bool(args.scout_eval_ft) and args.scout_share == "all"
         # while the scout's head is the averaged one (--scout_share all, before the freeze) it does not know my label
         # distribution - that is what the residual learner adds - so screen on scout + log(my class frequencies)
         self.screen_prior = bool(args.scout_screen_prior) and args.scout_share == "all"
@@ -155,10 +156,11 @@ class clientScout(Client):
         return DataLoader(self._idx_ds, self.batch_size, drop_last=True, shuffle=True,
                           pin_memory=str(self.device).startswith("cuda"))
 
-    def realign(self, epochs):
+    def realign(self, epochs, sc=None):
         """After the averaged backbone arrives (or is restored), fit my personal projector/head to it with the backbone
-        and its BN fixed; otherwise the scout I evaluate and learn from is a new backbone under last round's head."""
-        sc = self.scout.to(self.device)
+        and its BN fixed; otherwise the scout I evaluate and learn from is a new backbone under last round's head.
+        sc: a copy to fit instead of my scout (evaluation-time personalization, --scout_eval_ft)."""
+        sc = (self.scout if sc is None else sc).to(self.device)
         sc.train()
         sc.base[0].eval()
         params = [p for n, p in sc.named_parameters() if not n.startswith("base.0.")]
@@ -198,7 +200,14 @@ class clientScout(Client):
     @torch.no_grad()
     def logits(self):
         """Scout and learner logits on my test set and held-out split (the server picks alpha and scores everything)."""
-        sc, model = self.scout.to(self.device).eval(), self.model.eval()
+        sc = self.scout
+        if self.eval_ft and not self.frozen:
+            # head still averaged (--scout_share all): score the model I would deploy if training stopped now, i.e.
+            # this scout with its projector/head fitted to my data for one epoch (a copy; training is unaffected)
+            sc = copy.deepcopy(self.scout)
+            with torch.enable_grad():
+                self.realign(1, sc)
+        sc, model = sc.to(self.device).eval(), self.model.eval()
         out = {}
         for tag, loader in (("test", self.load_test_data()), ("held", DataLoader(self.split()[1], 256))):
             lt, lp, ys = [], [], []

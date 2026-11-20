@@ -24,7 +24,7 @@ class FedScout(Server):
         assert arch[0] == "c" and arch[1:].isdigit(), "--scout_arch must be c<depth> (CIFAR ResNet-depth)"
         cargs = copy.copy(args)
         cargs.models = [f'CIFARResNet({int(arch[1:])}, width={float(args.scout_width)}, num_classes=args.num_classes)']
-        cargs.fedsa_projector = "linear"
+        cargs.fedsa_projector = args.fedsa_projector  # linear, seqpool or native (--scout_projector)
         scout = BaseHeadSplit(cargs, 0)
         for c in self.clients:
             c.scout = copy.deepcopy(scout)  # same initial weights everywhere
@@ -42,7 +42,8 @@ class FedScout(Server):
         print(f"\nJoin ratio / total clients: {self.join_ratio} / {self.num_clients}")
         print(f"FedScout: scout {arch} x{args.scout_width} ({sum(p.numel() for p in scout.parameters()) / 1e3:.1f}K params), "
               f"shared per round {self.shared_floats / 1e3:.1f}K floats ({args.scout_share}), gate {args.scout_gate}, "
-              f"realign {args.scout_realign}, residual {args.scout_residual}, screen tau {args.scout_screen_tau}")
+              f"realign {args.scout_realign}, residual {args.scout_residual}, screen tau {args.scout_screen_tau}, "
+              f"projector {args.scout_projector} ({args.fedsa_projector})")
 
     def train(self):
         for i in range(self.global_rounds + 1):

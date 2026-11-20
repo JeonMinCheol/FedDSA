@@ -216,3 +216,9 @@
 | Tiny-ImageNet | 28.95 / 28.70 / 29.04 | 23.63 / 23.59 / 23.28 | 48.71 / 48.38 / 47.91 | 0.591 / 0.596 / 0.591 |
 
 - 곡선 TSV: `docs/figs/data/fedapen_c8_{Cifar100,TinyImagenet}_s{0,1,2}.tsv`(`CURVE_BASE`가 바로 읽는다), `fedmrl_c8_{Cifar100,Flowers102}_s{0,1,2}.tsv`(FedMRL 통신량 항목은 아직 `comm_vs_acc.py`에 없다).
+## 11-20 요청 (63 노드): FedAPEN c8 원래 차원 head로 재측정
+- 이유: FedAPEN은 logit만 섞기 때문에 공유 모델이 HtFLlib의 공통 특징 차원(512)을 쓸 필요가 없다. 지금 run은 pool → 512 → 512×C head라 head만 45K float가 더 붙어 통신이 부풀려진다(c8 CIFAR 129.4K vs 원래 차원 84.6K). 통신 비교를 공정하게 하려고 원래 차원 head로 다시 잰다. 원 논문도 HtFLlib의 512 head를 쓰지 않았다.
+- 코드: `--apen_native_head true` (커밋 이 문서와 같은 커밋). 공유 모델만 원래 분류기 모양(c8: 64×C)이 되고 private 모델은 그대로다.
+- 실행: `submit_baselines.sbatch`에 `METHOD=FedAPEN_nh` 추가. `GARCH=c8`, 3 데이터셋 × seed 0~2, 나머지 지시서 그대로(원 논문 lr 0.01, 개인 head 없음).
+- 곡선 내보내기: `python comm_vs_acc.py --export <run 로그> ../docs/figs/data/fedapen_nh_c8_<dataset>_s<seed>.tsv` 후 push. 그림 스크립트는 이 이름을 이미 읽는다.
+- 우선순위: 지금 대기 중인 c8 기준선(FedAPEN CIFAR, FedMRL, pFedMoE 나머지) 다음.

@@ -39,6 +39,8 @@ esac
 case "${METHOD}" in
   FedAPEN)     METHOD_ARGS=(-algo FedAPEN --global_arch "${GARCH}") ;;
   FedAPEN_lr2) METHOD_ARGS=(-algo FedAPEN --global_arch "${GARCH}" --apen_shared_lr_scale 2) ;;
+  # FedAPEN with the shared model's own classifier (64 x C for c8, no pool to -fd): FedAPEN mixes only logits (11-20)
+  FedAPEN_nh)  METHOD_ARGS=(-algo FedAPEN --global_arch "${GARCH}" --apen_native_head true) ;;
   FedMRL)      METHOD_ARGS=(-algo FedMRL --global_arch "${GARCH}") ;;
   Local)       METHOD_ARGS=(-algo FedSA --fedsa_anchor_momentum 1.0 --fedsa_eval head --projector linear
                             --fedsa_anchor_codebook simplex --fedsa_gap_mode min -lam 0 -mcl 0 -cc 0) ;;

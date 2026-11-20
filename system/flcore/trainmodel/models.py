@@ -143,11 +143,18 @@ class BaseHeadSplit(nn.Module):
 
         head = None # you may need more code for pre-existing heterogeneous heads
         projector = getattr(args, 'fedsa_projector', 'pool')
-        if projector in ('linear', 'orthofixed', 'orthoaffine', 'ortholearn', 'dimaware'):
+        if projector in ('linear', 'orthofixed', 'orthoaffine', 'ortholearn', 'dimaware', 'seqpool', 'native'):
             # linear: FedDSA-style trainable projector; orthofixed: frozen random orthogonal
             # map (control: keeps the information the pool discards, learns nothing)
+            # seqpool: the HtFLlib pool (AdaptiveAvgPool1d to feature_dim, no parameters) in this Sequential layout,
+            # so FedScout's base[0] (backbone) / base[1:] split keeps working
             base, in_dim = _replace_classifier_with_identity(self.base)
-            proj = nn.Linear(in_dim, feature_dim, bias=(projector == 'linear'))
+            # native: no projector, the head sits on the model's own features (in_dim x C, its original classifier shape)
+            if projector == 'native':
+                proj, feature_dim = nn.Identity(), in_dim
+            else:
+                proj = (nn.AdaptiveAvgPool1d(feature_dim) if projector == 'seqpool'
+                        else nn.Linear(in_dim, feature_dim, bias=(projector == 'linear')))
             if projector in ('orthofixed', 'orthoaffine'):
                 nn.init.orthogonal_(proj.weight)
                 proj.weight.requires_grad_(False)

@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 from flcore.clients.clientapen import clientAPEN
 from flcore.clients.clientbase import save_item
@@ -11,7 +12,11 @@ class FedAPEN(FML):
 
     def __init__(self, args, times):
         Server.__init__(self, args, times)
-        global_model = BaseHeadSplit(args, is_global=True) if hasattr(args, 'global_model') else BaseHeadSplit(args, 0)
+        gargs = args
+        if getattr(args, "apen_native_head", False):  # shared model with its own classifier shape (private models unchanged)
+            gargs = copy.copy(args)
+            gargs.fedsa_projector = "native"
+        global_model = BaseHeadSplit(gargs, is_global=True) if hasattr(args, 'global_model') else BaseHeadSplit(gargs, 0)
         save_item(global_model.to(args.device), self.role, 'global_model', self.save_folder_name)
         self.set_slow_clients()
         self.set_clients(clientAPEN)

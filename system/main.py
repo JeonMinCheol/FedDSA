@@ -818,13 +818,17 @@ if __name__ == "__main__":
     parser.add_argument('--pfedmoe_gate_lr', type=float, default=0.01, help="pFedMoE: learning rate of the local gating network (paper grid 0.001-1)")
     # FedScout (defaults = the final configuration)
     parser.add_argument('--scout_arch', type=str, default="c8", help="FedScout: scout architecture, c<depth> = CIFAR ResNet")
+    parser.add_argument('--scout_projector', type=str, default="linear", choices=["linear", "pool", "none"],
+                        help="FedScout: projector of the scout and the learner to -fd (pool = HtFLlib's AdaptiveAvgPool1d; none = "
+                             "no projector, each model keeps its own classifier shape, e.g. 64 x C for the c8 scout: lighter to "
+                             "share; nothing of the learner is shared, so it needs no common feature size either)")
     parser.add_argument('--scout_width', type=float, default=1.0, help="FedScout: channel multiplier of the scout")
     parser.add_argument('--scout_lr_scale', type=float, default=3.0, help="FedScout: scout lr = local lr x this")
     parser.add_argument('--scout_wd', type=float, default=0.0, help="FedScout: scout weight decay")
     parser.add_argument('--scout_val', type=float, default=0.05, help="FedScout: held-out fraction of local training data (gate, alpha)")
     parser.add_argument('--scout_share', type=str, default="backbone", choices=["backbone", "all", "none"],
                         help="FedScout: what of the scout is FedAvg'd (all = head too, none = no averaging; ablations)")
-    parser.add_argument('--scout_realign', type=int, default=1, help="FedScout: head-realignment epochs after each average (0 = off)")
+    parser.add_argument('--scout_realign', type=int, default=0, help="FedScout: head-realignment epochs after each average (0 = off)")
     parser.add_argument('--scout_gate', type=int, default=20, help="FedScout: memorization-gate patience in rounds (0 = never freeze)")
     parser.add_argument('--scout_freeze_at', type=int, default=0, help="FedScout: force the freeze at this round (control)")
     parser.add_argument('--scout_freeze_head', type=str2bool, nargs='?', const=True, default=True,
@@ -836,6 +840,9 @@ if __name__ == "__main__":
     parser.add_argument('--scout_screen_tau', type=float, default=0.5,
                         help="FedScout: the learner trains only on samples where the received scout's p(y) < tau (0 = off)")
     parser.add_argument('--scout_alphas', type=str, default="0,0.1,0.25,0.5,0.75,1", help="FedScout: fusion weights of the learner, picked on the pooled held-out splits (ascending)")
+    parser.add_argument('--scout_eval_ft', type=str2bool, nargs='?', const=True, default=True,
+                        help="FedScout with --scout_share all: evaluate with a copy of the scout whose head is fitted to the "
+                             "client's data for one epoch (what would be deployed if training stopped now)")
     parser.add_argument('--scout_screen_prior', type=str2bool, nargs='?', const=True, default=False,
                         help="FedScout: with --scout_share all, screen on scout logits + log local class frequencies until the freeze")
     parser.add_argument('--scout_cascade_taus', type=str, default="0.5,0.7,0.9",
@@ -844,6 +851,9 @@ if __name__ == "__main__":
     parser.add_argument('--pfedmoe_gate_hidden', type=int, default=128, help="pFedMoE: hidden width of the gating network (not reported in the paper)")
     parser.add_argument('--apen_shared_lr_scale', type=float, default=1.0,
                         help="FedAPEN: multiply the shared model's local learning rate")
+    parser.add_argument('--apen_native_head', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedAPEN: the shared model keeps its own classifier on its native features (no pool to -fd and "
+                             "-fd x C head); FedAPEN mixes only logits, so nothing needs the common feature size")
     parser.add_argument('--apen_personal_head', type=str2bool, nargs='?', const=True, default=False,
                         help="FedAPEN: keep the shared model's head per client (only its body is averaged)")
     parser.add_argument('--fedsa_cm_server_lr', type=float, default=1.0,
@@ -895,7 +905,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     if args.algorithm == "FedScout":
-        args.fedsa_projector = "linear"  # residual learner = backbone -> Linear(-fd) -> head, like the scout
+        # scout and residual learner = backbone -> projector (Linear, or HtFLlib's parameter-free pool) -> head
+        args.fedsa_projector = {"linear": "linear", "pool": "seqpool", "none": "native"}[args.scout_projector]
     if args.algorithm == "ETFProtoFL":
         # paper: projector output dim = number of classes, trainable projector after the backbone
         args.feature_dim = args.num_classes
