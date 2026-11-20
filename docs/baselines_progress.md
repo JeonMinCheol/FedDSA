@@ -200,3 +200,19 @@
 ## 11-19 17:40 큐 조정 (사용자 지시)
 - c20 FedMRL 묶음 3개(492607~09, 부록용)를 취소했다. 부록에서 FedMRL c20은 빠진다.
 - 클라이언트 수 실험(494931~38, `SERIAL=1`, GPU에 run 하나)은 `--max_parallel_clients 4`로 돈다(`submit_baselines.sbatch`에서 `SERIAL`이 있으면 `MAX_PAR=4`). c8 묶음(494851~54, 프로세스 3개)은 11-18 cuDNN 오류 이력 때문에 1을 유지한다. 지금 도는 494850(c8 FedAPEN Tiny)은 1 그대로다.
+
+## 11-20 c8 결과 (본 표, 프로토콜: seed 평균 곡선 최고값 ± 그 라운드 seed 표준편차)
+| 방법 | CIFAR-100 | Flowers102 | Tiny-ImageNet |
+|---|---|---|---|
+| FedAPEN c8 | 54.83 ± 0.33 @R500 | 59.74 ± 0.53 @R500 | 41.84 ± 0.39 @R500 |
+| FedMRL c8 | 38.24 ± 0.14 @R490 | 48.79 ± 0.83 @R430 | 진행 중 (494854, R210 @10:50) |
+- 잡: FedAPEN Tiny 494850(11-19 14:53~11-20 01:02), FedAPEN CIFAR 494851(01:02~03:32), FedMRL CIFAR 494852(03:32~05:39), FedMRL Flowers 494853(05:39~06:53). 모두 `max_parallel_clients 1`, 오류 없음.
+- FedAPEN c8은 세 데이터셋 모두 R500에서 최고값이다(아직 오르는 중에 끝남).
+- FedAPEN 진단 줄 R500 (seed 0/1/2, %):
+
+| 데이터셋 | private | shared | shared+prior | w_private 평균 |
+|---|---|---|---|---|
+| CIFAR-100 | 43.90 / 44.31 / 44.09 | 32.81 / 33.40 / 34.22 | 60.69 / 61.15 / 61.57 | 0.605 / 0.611 / 0.608 |
+| Tiny-ImageNet | 28.95 / 28.70 / 29.04 | 23.63 / 23.59 / 23.28 | 48.71 / 48.38 / 47.91 | 0.591 / 0.596 / 0.591 |
+
+- 곡선 TSV: `docs/figs/data/fedapen_c8_{Cifar100,TinyImagenet}_s{0,1,2}.tsv`(`CURVE_BASE`가 바로 읽는다), `fedmrl_c8_{Cifar100,Flowers102}_s{0,1,2}.tsv`(FedMRL 통신량 항목은 아직 `comm_vs_acc.py`에 없다).
