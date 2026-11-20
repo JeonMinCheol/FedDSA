@@ -234,8 +234,8 @@
 - 하던 pFedMoE c8(본 표, 클라이언트 수 실험)은 그대로 마무리한다.
 - **새 일: FedScout 클라이언트 수·참여율 실험 12개.** 63 노드(2080 Ti 11GB)에서는 100명 run이 메모리 부족으로 죽어서 ariel로 옮긴다.
   - 설정(기준선과 같음): CIFAR-100, `-lbs 32`, 500R, `-eg 10`, seed 0~2, HtFE-img-8. (50명, join 0.5) `DATASET=Cifar100_50 NC=50 JR=0.5`, (100명, join 0.5/0.3/0.1) `DATASET=Cifar100_100 NC=100 JR=…`.
-  - 코드: 이 문서와 같은 커밋 이후의 main. FedScout 클라이언트가 자기 차례에만 모델을 GPU에 올리는 수정(`--keep_client_models_on_gpu false`)이 들어 있다. 63에서 100명·join 0.1·0.5 smoke 통과.
-  - 실행: `submit_baselines.sbatch`의 `METHOD=FedScout_sa` 또는 `METHOD=FedScout_ph` (스크립트에 오프로딩·`--max_parallel_clients 1`이 들어 있다). 이 계정 python은 `PYTHON_BIN=/nas2/data/a2019102224/miniconda3/envs/htfllib/bin/python`으로 넘긴다(`LD_LIBRARY_PATH` 필요, pFedMoE 때와 같음).
+  - 코드: 이 문서와 같은 커밋 이후의 main. 100명이면 GPU 메모리를 약 18GB 쓴다(private 모델 가중치 약 8.3GB + 학습 뒤 남는 gradient 약 8.3GB + 기타). 3090(24GB)에서는 그대로 돌리면 되고, 메모리 부족이 나면 `--keep_client_models_on_gpu false`(차례가 온 클라이언트만 GPU에 올림, 63에서 100명 smoke 통과)를 METHOD_ARGS에 붙인다.
+  - 실행: `submit_baselines.sbatch`의 `METHOD=FedScout_sa` 또는 `METHOD=FedScout_ph` (스크립트에 `--max_parallel_clients 1`이 들어 있다). 이 계정 python은 `PYTHON_BIN=/nas2/data/a2019102224/miniconda3/envs/htfllib/bin/python`으로 넘긴다(`LD_LIBRARY_PATH` 필요, pFedMoE 때와 같음).
   - 예: `sbatch -J fs_nc100jr0.1_s0 --export=ALL,METHOD=FedScout_sa,DATASET=Cifar100_100,NC=100,JR=0.1,SEED=0,GARCH=c8,PREFIX=fs,PYTHON_BIN=... submit_baselines.sbatch`
   - **어느 METHOD를 돌릴지는 63의 판정 뒤 확정한다(11-20 17시 무렵, 이 절에 "확정"으로 적는다).** 그 전에는 `GR=3 RUN=smoke_fs_nc100` smoke만 돌려 오류와 메모리를 확인한다.
   - 걸리는 시간(63 2080 Ti 기준, ariel GPU는 더 빠를 것): 100명 join 0.5 라운드당 약 2~3분(500R 약 19시간), join 0.3 약 12시간, join 0.1 약 5시간, 50명 약 9시간.

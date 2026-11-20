@@ -41,12 +41,13 @@ case "${METHOD}" in
   FedAPEN_lr2) METHOD_ARGS=(-algo FedAPEN --global_arch "${GARCH}" --apen_shared_lr_scale 2) ;;
   # FedAPEN with the shared model's own classifier (64 x C for c8, no pool to -fd): FedAPEN mixes only logits (11-20)
   FedAPEN_nh)  METHOD_ARGS=(-algo FedAPEN --global_arch "${GARCH}" --apen_native_head true) ;;
-  # FedScout final config (11-20): c8 scout without projector, realign off, no gate freeze; client models parked in host
-  # memory between turns (100 clients do not fit otherwise). _sa = head averaged, personalized at R490; _ph = personal head
+  # FedScout final config (11-20): c8 scout without projector, realign off, no gate freeze.
+  # _sa = head averaged, personalized at R490; _ph = personal head. 100 clients need about 18 GB (fits a 24 GB 3090);
+  # on a smaller GPU add --keep_client_models_on_gpu false (models parked in host memory between turns)
   FedScout_sa) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
-                            --scout_share all --scout_freeze_at 490 --keep_client_models_on_gpu false) ;;
+                            --scout_share all --scout_freeze_at 490) ;;
   FedScout_ph) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
-                            --scout_share backbone --keep_client_models_on_gpu false) ;;
+                            --scout_share backbone) ;;
   FedMRL)      METHOD_ARGS=(-algo FedMRL --global_arch "${GARCH}") ;;
   Local)       METHOD_ARGS=(-algo FedSA --fedsa_anchor_momentum 1.0 --fedsa_eval head --projector linear
                             --fedsa_anchor_codebook simplex --fedsa_gap_mode min -lam 0 -mcl 0 -cc 0) ;;
