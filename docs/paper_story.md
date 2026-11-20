@@ -291,3 +291,13 @@ FedAPEN c8 native head(본 표 버전), seed 0, 500R, 나머지 프로토콜 동
 | 주 지표는 마지막 값 또는 validation 선택 | 마지막 평가를 주 지표로 | 반영 |
 | TMC용 실측: 같은 LAN에서 FedAPEN·FedScout의 실제 동기 라운드 시간·송수신 바이트·에너지, 로컬 50 epoch 전체 시간·최고 메모리, cascade 배치 1 실제 실행 p50·p95, 같은 정확도까지의 시간은 공통 도달 정확도에서 | 실기기 FL 측정 스크립트 작성 필요 | 미착수 |
 | `c8 FedAvg + head FT`는 경험적으로 강한 기준선이고, Bayes 상한은 참 사후확률·참 prior의 이론 조건 | 원고 표현 원칙 | 반영 |
+
+
+### 실제 LAN FL 측정 1차: 4대·5라운드 (11-20 21–22시, `system/fl_device.py`, 원자료 `docs/figs/data/device/fl4/`)
+- 서버 master(192.168.0.11), 클라이언트 master(Pi 5, cid 3 ResNet18) · coral1(Pi 5, cid 1 GoogLeNet) · coral2(Pi 5, cid 2 MobileNetV2) · orin1(Orin Nano, cid 7 ResNet152), 실제 CIFAR 분할, TCP, 배치 128.
+- **동기 라운드 시간: FedAPEN 100.5 s vs FedScout 12.7 s(7.9배)**. FedAPEN은 기기별 34–100 s로 들쭉날쭉하고 Pi ResNet18 기기가 라운드 시간을 정함. FedScout은 Pi 10–12.6 s로 고름(모두 같은 c8). Orin 계산 10.8 s vs 0.7 s.
+- 송수신(클라이언트당·방향당): 0.534 MB vs 0.355 MB. 최고 메모리: Pi 733–786 MB vs 538–570 MB, Orin 1,001 MB vs 327 MB.
+- **Orin 에너지(tegrastats VDD_IN): 158 J/라운드(14.7 W) vs 5 J/라운드(6.7 W), 32배.** 실측 계산 시간은 기기 step 측정 기반 추정과 비슷(예: Pi ResNet18 FedAPEN 추정 약 115 s, 실측 100 s).
+- 로컬 50 epoch·cascade는 **상한**: scout를 5라운드만 학습해 learner가 샘플의 86–97%를 학습(최종 구성에서는 약 30%). Pi ResNet18 65.6 분, GoogLeNet 29.9 분, MobileNetV2 16.0 분, Orin ResNet152 6.3 분(6.0 kJ). cascade p50/p95: Pi 15–18 / 20–33 ms, Orin ResNet152 107/108 ms(learner가 97% 샘플에서 실행).
+- 보완: FedScout `--scout_save_path`로 시뮬레이션 R490 scout(`docs/figs/data/device/scout_Cifar100_s0_R490.pt`)를 저장하고, `fl_device.py --init_scout`로 로컬 단계를 그 scout에서 시작해 실제 screening 비율로 다시 잰다. J7-C 벽 전력 기록이 이번엔 비어 있음(블루투스 연결 실패) → 재확인 필요.
+- 다음(11-21): hailo1~3을 켜서 20명 / 10대(Pi 5 6대, Orin 2대, Jetson Nano 2대; 모델 배정은 HtFE-img-8 그대로, Nano에는 작은 모델) 측정. 스크립트: 작업 폴더의 `setup_hailo.sh`, `run_fl20.sh`.

@@ -119,6 +119,13 @@ class FedScout(Server):
             self.best_state = {k: v.detach().cpu().clone() for k, v in self.clients[0].scout.state_dict().items()
                                if k.startswith("base.0.")}
         if rnd - self.best_round >= self.args.scout_gate or 0 < self.args.scout_freeze_at <= rnd:
+            if getattr(self.args, "scout_save_path", ""):
+                # the federated scout at the freeze (averaged head, restored best backbone), before any personalization;
+                # torch's legacy format so the lab devices (torch 1.10 on Jetson Nano) can read it (system/fl_device.py)
+                g = {k: v.detach().cpu().clone() for k, v in self.clients[0].scout.state_dict().items()}
+                g.update(self.best_state)
+                torch.save(g, self.args.scout_save_path, _use_new_zipfile_serialization=False)
+                print(f"[Round {rnd}] saved the federated scout to {self.args.scout_save_path}")
             for c in self.clients:
                 own = c.scout.state_dict()
                 c.scout.load_state_dict({k: v.to(own[k].device, own[k].dtype) for k, v in self.best_state.items()}, strict=False)

@@ -826,6 +826,8 @@ if __name__ == "__main__":
     parser.add_argument('--scout_head_lr_scale', type=float, default=1.0,
                         help="FedScout: scout projector/head lr = scout lr x this (8 ~ the pool projector's effective head step "
                              "for a 64-d c8 head under -fd 512)")
+    parser.add_argument('--scout_save_path', type=str, default="",
+                        help="FedScout: save the federated scout at the freeze (averaged head, best backbone) to this file")
     parser.add_argument('--scout_learner_after_freeze', type=str2bool, nargs='?', const=True, default=False,
                         help="FedScout: train the residual learner only after the freeze (while federating, only the scout trains; "
                              "the learner would mostly learn the local class prior there, see the scout_prior diagnostic)")

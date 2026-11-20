@@ -1,0 +1,318 @@
+{
+ "method": "fedscout",
+ "clients": [
+  {
+   "cid": 3,
+   "arch": "r18",
+   "device": "cpu",
+   "n": 2158,
+   "host": "master"
+  },
+  {
+   "cid": 1,
+   "arch": "gnet",
+   "device": "cpu",
+   "n": 2175,
+   "host": "coral1"
+  },
+  {
+   "cid": 2,
+   "arch": "mnv2",
+   "device": "cpu",
+   "n": 1961,
+   "host": "coral2"
+  },
+  {
+   "cid": 7,
+   "arch": "r152",
+   "device": "cuda",
+   "n": 2171,
+   "host": "orin1"
+  }
+ ],
+ "rounds": [
+  {
+   "round": 0,
+   "t_start": 1795177673.7907271,
+   "round_s": 13.184759378433228,
+   "down_bytes": 355258,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 13.12558913230896,
+     "arrived_s": 13.142050743103027,
+     "up_bytes": 355286,
+     "peak_mem_mb": 539.1328125
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 12.391286134719849,
+     "arrived_s": 13.153101444244385,
+     "up_bytes": 355286,
+     "peak_mem_mb": 568.4765625
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 10.08279013633728,
+     "arrived_s": 13.164100646972656,
+     "up_bytes": 355286,
+     "peak_mem_mb": 538.14453125
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 1.600602388381958,
+     "arrived_s": 13.178664445877075,
+     "up_bytes": 354953,
+     "peak_mem_mb": 328.29931640625
+    }
+   ]
+  },
+  {
+   "round": 1,
+   "t_start": 1795177686.9787872,
+   "round_s": 12.678086280822754,
+   "down_bytes": 355258,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 12.634352922439575,
+     "arrived_s": 12.648365259170532,
+     "up_bytes": 355286,
+     "peak_mem_mb": 539.2578125
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 11.881645202636719,
+     "arrived_s": 12.656802892684937,
+     "up_bytes": 355286,
+     "peak_mem_mb": 570.37890625
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 10.115315675735474,
+     "arrived_s": 12.664831638336182,
+     "up_bytes": 355286,
+     "peak_mem_mb": 538.14453125
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 0.7116837501525879,
+     "arrived_s": 12.672877311706543,
+     "up_bytes": 354953,
+     "peak_mem_mb": 327.29931640625
+    }
+   ]
+  },
+  {
+   "round": 2,
+   "t_start": 1795177699.6601882,
+   "round_s": 12.522748470306396,
+   "down_bytes": 355258,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 12.484511852264404,
+     "arrived_s": 12.494068622589111,
+     "up_bytes": 355286,
+     "peak_mem_mb": 539.2578125
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 12.343060970306396,
+     "arrived_s": 12.502058506011963,
+     "up_bytes": 355286,
+     "peak_mem_mb": 570.37890625
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 10.220138788223267,
+     "arrived_s": 12.509517192840576,
+     "up_bytes": 355286,
+     "peak_mem_mb": 538.14453125
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 0.7376084327697754,
+     "arrived_s": 12.517539978027344,
+     "up_bytes": 354953,
+     "peak_mem_mb": 327.29931640625
+    }
+   ]
+  },
+  {
+   "round": 3,
+   "t_start": 1795177712.1862016,
+   "round_s": 13.110533237457275,
+   "down_bytes": 355258,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 13.070653438568115,
+     "arrived_s": 13.079715013504028,
+     "up_bytes": 355286,
+     "peak_mem_mb": 539.2578125
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 12.012916326522827,
+     "arrived_s": 13.087220668792725,
+     "up_bytes": 355286,
+     "peak_mem_mb": 570.37890625
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 9.861966609954834,
+     "arrived_s": 13.097147941589355,
+     "up_bytes": 355286,
+     "peak_mem_mb": 538.14453125
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 0.7449183464050293,
+     "arrived_s": 13.10536503791809,
+     "up_bytes": 354953,
+     "peak_mem_mb": 327.29931640625
+    }
+   ]
+  },
+  {
+   "round": 4,
+   "t_start": 1795177725.2999492,
+   "round_s": 12.401362180709839,
+   "down_bytes": 355258,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 12.360162734985352,
+     "arrived_s": 12.369468212127686,
+     "up_bytes": 355286,
+     "peak_mem_mb": 539.2578125
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 11.724493503570557,
+     "arrived_s": 12.378961086273193,
+     "up_bytes": 355286,
+     "peak_mem_mb": 570.37890625
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 9.920774698257446,
+     "arrived_s": 12.386778354644775,
+     "up_bytes": 355286,
+     "peak_mem_mb": 538.14453125
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 0.7437689304351807,
+     "arrived_s": 12.39622187614441,
+     "up_bytes": 354953,
+     "peak_mem_mb": 327.29931640625
+    }
+   ]
+  }
+ ],
+ "local": [
+  {
+   "cid": 3,
+   "arch": "r18",
+   "device": "cpu",
+   "local_s": 3937.122973918915,
+   "learner_s": 3931.325570344925,
+   "kept_frac": 0.955977737903595,
+   "peak_mem_mb": 592.03515625,
+   "cascade_p50_ms": 16.754497999500018,
+   "cascade_p95_ms": 32.46787240059349,
+   "cascade_acc": 0.42,
+   "cascade_run_frac": 0.96,
+   "t_start": 1795177737.7056875,
+   "t_end": 1795181680.7314856
+  },
+  {
+   "cid": 1,
+   "arch": "gnet",
+   "device": "cpu",
+   "local_s": 1793.1410610675812,
+   "learner_s": 1786.9460628032684,
+   "kept_frac": 0.8708046078681946,
+   "peak_mem_mb": 624.2265625,
+   "cascade_p50_ms": 17.666096999164438,
+   "cascade_p95_ms": 24.990505700043293,
+   "cascade_acc": 0.4633333333333333,
+   "cascade_run_frac": 0.8133333333333334,
+   "t_start": 1795177737.6961026,
+   "t_end": 1795179535.92474
+  },
+  {
+   "cid": 2,
+   "arch": "mnv2",
+   "device": "cpu",
+   "local_s": 960.7268559932709,
+   "learner_s": 955.5538935661316,
+   "kept_frac": 0.8556858897209167,
+   "peak_mem_mb": 674.703125,
+   "cascade_p50_ms": 15.264505998857203,
+   "cascade_p95_ms": 19.63049510031852,
+   "cascade_acc": 0.44666666666666666,
+   "cascade_run_frac": 0.8033333333333333,
+   "t_start": 1795177737.7103689,
+   "t_end": 1795178702.7886288
+  },
+  {
+   "cid": 7,
+   "arch": "r152",
+   "device": "cuda",
+   "local_s": 376.1548001766205,
+   "learner_s": 375.4267899990082,
+   "kept_frac": 0.9719023108482361,
+   "peak_mem_mb": 865.10498046875,
+   "cascade_p50_ms": 106.97308599992539,
+   "cascade_p95_ms": 108.29352379878401,
+   "cascade_acc": 0.35,
+   "cascade_run_frac": 0.9666666666666667,
+   "t_start": 1795177737.7162418,
+   "t_end": 1795178145.4494781
+  }
+ ],
+ "local_wall_s": 3943.0304758548737
+}

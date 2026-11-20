@@ -1,0 +1,255 @@
+{
+ "method": "fedapen",
+ "clients": [
+  {
+   "cid": 3,
+   "arch": "r18",
+   "device": "cpu",
+   "n": 2158,
+   "host": "master"
+  },
+  {
+   "cid": 1,
+   "arch": "gnet",
+   "device": "cpu",
+   "n": 2175,
+   "host": "coral1"
+  },
+  {
+   "cid": 2,
+   "arch": "mnv2",
+   "device": "cpu",
+   "n": 1961,
+   "host": "coral2"
+  },
+  {
+   "cid": 7,
+   "arch": "r152",
+   "device": "cuda",
+   "n": 2171,
+   "host": "orin1"
+  }
+ ],
+ "rounds": [
+  {
+   "round": 0,
+   "t_start": 1795177123.9719744,
+   "round_s": 102.02608609199524,
+   "down_bytes": 534458,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 101.96304965019226,
+     "arrived_s": 101.97815251350403,
+     "up_bytes": 534486,
+     "peak_mem_mb": 732.4375
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 57.75045609474182,
+     "arrived_s": 101.99262309074402,
+     "up_bytes": 534486,
+     "peak_mem_mb": 733.27734375
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 33.190643548965454,
+     "arrived_s": 102.00495457649231,
+     "up_bytes": 534486,
+     "peak_mem_mb": 786.390625
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 16.179975271224976,
+     "arrived_s": 102.01987218856812,
+     "up_bytes": 534153,
+     "peak_mem_mb": 996.61767578125
+    }
+   ]
+  },
+  {
+   "round": 1,
+   "t_start": 1795177226.001492,
+   "round_s": 99.76729559898376,
+   "down_bytes": 534458,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 99.7212917804718,
+     "arrived_s": 99.7352032661438,
+     "up_bytes": 534486,
+     "peak_mem_mb": 732.4375
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 58.04960322380066,
+     "arrived_s": 99.74481558799744,
+     "up_bytes": 534486,
+     "peak_mem_mb": 733.27734375
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 33.75515794754028,
+     "arrived_s": 99.75292754173279,
+     "up_bytes": 534486,
+     "peak_mem_mb": 786.390625
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 10.825244665145874,
+     "arrived_s": 99.76121163368225,
+     "up_bytes": 534153,
+     "peak_mem_mb": 998.61767578125
+    }
+   ]
+  },
+  {
+   "round": 2,
+   "t_start": 1795177325.772236,
+   "round_s": 103.83092665672302,
+   "down_bytes": 534458,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 103.79029750823975,
+     "arrived_s": 103.80083227157593,
+     "up_bytes": 534486,
+     "peak_mem_mb": 732.4375
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 58.492273807525635,
+     "arrived_s": 103.80961561203003,
+     "up_bytes": 534486,
+     "peak_mem_mb": 733.27734375
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 33.77625012397766,
+     "arrived_s": 103.81779503822327,
+     "up_bytes": 534486,
+     "peak_mem_mb": 786.390625
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 10.742799758911133,
+     "arrived_s": 103.82598900794983,
+     "up_bytes": 534153,
+     "peak_mem_mb": 999.36767578125
+    }
+   ]
+  },
+  {
+   "round": 3,
+   "t_start": 1795177429.606645,
+   "round_s": 99.06813097000122,
+   "down_bytes": 534458,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 99.02558422088623,
+     "arrived_s": 99.03659844398499,
+     "up_bytes": 534486,
+     "peak_mem_mb": 738.45703125
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 58.98976516723633,
+     "arrived_s": 99.0445146560669,
+     "up_bytes": 534486,
+     "peak_mem_mb": 733.27734375
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 34.37366604804993,
+     "arrived_s": 99.05259823799133,
+     "up_bytes": 534486,
+     "peak_mem_mb": 786.390625
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 10.862951040267944,
+     "arrived_s": 99.06094217300415,
+     "up_bytes": 534153,
+     "peak_mem_mb": 999.61767578125
+    }
+   ]
+  },
+  {
+   "round": 4,
+   "t_start": 1795177528.6830778,
+   "round_s": 99.42980670928955,
+   "down_bytes": 534458,
+   "clients": [
+    {
+     "cid": 3,
+     "arch": "r18",
+     "device": "cpu",
+     "compute_s": 99.38351655006409,
+     "arrived_s": 99.3967216014862,
+     "up_bytes": 534486,
+     "peak_mem_mb": 738.45703125
+    },
+    {
+     "cid": 1,
+     "arch": "gnet",
+     "device": "cpu",
+     "compute_s": 59.42174768447876,
+     "arrived_s": 99.40581583976746,
+     "up_bytes": 534486,
+     "peak_mem_mb": 733.27734375
+    },
+    {
+     "cid": 2,
+     "arch": "mnv2",
+     "device": "cpu",
+     "compute_s": 33.903332471847534,
+     "arrived_s": 99.4146375656128,
+     "up_bytes": 534486,
+     "peak_mem_mb": 786.390625
+    },
+    {
+     "cid": 7,
+     "arch": "r152",
+     "device": "cuda",
+     "compute_s": 10.728429794311523,
+     "arrived_s": 99.42475962638855,
+     "up_bytes": 534153,
+     "peak_mem_mb": 1000.7685546875
+    }
+   ]
+  }
+ ]
+}

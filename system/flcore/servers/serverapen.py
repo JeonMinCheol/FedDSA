@@ -42,7 +42,9 @@ class FedAPEN(FML):
                     acc = {k: 100 * sum(x[k] for x in res) / n for k in ("shared", "shared_prior", "ensemble")}
                     print(f"APENSwap shared@R{rs} private@R{r}: shared={acc['shared']:.2f} shared+prior={acc['shared_prior']:.2f} "
                           f"ensemble={acc['ensemble']:.2f} margin={acc['ensemble'] - acc['shared_prior']:+.2f} "
-                          f"w*_mean={np.mean([x['w'] for x in res]):.2f} tau*_mean={np.mean([x['tau'] for x in res]):.2f}")
+                          f"w*_mean={np.mean([x['w'] for x in res]):.2f} tau*_mean={np.mean([x['tau'] for x in res]):.2f} "
+                          f"shared_nll_val={sum(x['nll_val'] for x in res) / sum(x['n_val'] for x in res):.4f} "
+                          f"shared_nll_test={sum(x['nll_test'] for x in res) / n:.4f}")
         d = [c.diag for c in self.clients if getattr(c, "diag", None)]
         if d:
             n = sum(x[2] for x in d)

@@ -192,6 +192,10 @@ class clientAPEN(clientFML):
         ws, taus = [i / 20 for i in range(21)], (0.0, 0.5, 1.0, 1.5, 2.0)
         w = max(ws, key=lambda a: (int(((a * pv + (1 - a) * gv).argmax(1) == yv).sum()), -a))
         tau = max(taus, key=lambda a: (int(((gv + a * lp).argmax(1) == yv).sum()), -a))
-        return {"n": len(yt), "shared": int((gt.argmax(1) == yt).sum()),
+        # shared-model quality for the figure's x axis: log loss on my held-out split (and test), summed
+        nll_val = float(F.cross_entropy(gv, yv, reduction="sum"))
+        nll_test = float(F.cross_entropy(gt, yt, reduction="sum"))
+        return {"n": len(yt), "n_val": len(yv), "nll_val": nll_val, "nll_test": nll_test,
+                "shared": int((gt.argmax(1) == yt).sum()),
                 "shared_prior": int(((gt + tau * lp).argmax(1) == yt).sum()),
                 "ensemble": int(((w * pt + (1 - w) * gt).argmax(1) == yt).sum()), "w": w, "tau": tau}
