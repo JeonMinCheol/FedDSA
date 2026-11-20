@@ -281,3 +281,10 @@ a2019102224 계정 혼자 12개를 다 돌리면 GPU 1개로 차례대로 돌아
 - 속도: ariel-v2(A5000, CPU 할당 58/64, 남은 메모리 2 GB) 혼잡으로 seed당 3.6–4.2 h. 같은 설정의 FedSA(3090)는 1.8 h였다.
 - 큐 순서: Local nc100 jr0.5 s1–2 → Local nc100 jr0.3, jr0.1 → pFedMoE(mp4) Flowers, Tiny, 클라이언트 수 4개.
 - 11:10 대기 잡 8개(494943–44, 495130–35)에 `ExcNodeList=ariel-v2,v8,v10,v11,v12,k2`를 걸었다(CPU load 또는 메모리가 가장 붐비는 노드). 실행 중인 494942는 v2에 남아 있다.
+
+### 11-20 18:40 FedScout smoke (ariel, a2019102224) 결과와 캐시 점검 수정
+- 옛 구성 `_sa`/`_ph` (nc100 jr0.5, GR=3, mp4, 3090): 둘 다 exit 0, cuDNN 오류 없음, GPU 약 15.9 GB.
+- 확정 구성 `_sa` (head lr ×8, learner after freeze; smoke만 `--scout_freeze_at 2`, GR=4): 동결 뒤 첫 라운드에서 `AssertionError: feature cache misaligned`로 죽었다(496565, A5000).
+- 원인: 캐시(배치 256)와 자체 점검(64개)이 서로 다른 cuDNN 알고리즘을 쓰고, Ampere의 TF32 때문에 최대 1.5e-3(중앙값 8.3e-4, feature 최대 약 2.5) 차이가 난다. 점검의 `atol=1e-4`가 너무 빡빡했다. 2080 Ti(TF32 없음)에서는 드러나지 않는다. 캐시 자체는 맞다.
+- 수정: `clientscout.py` 점검을 `atol=1e-2`로 넓혔다(어긋난 행은 O(1) 차이). 오차를 로그에 남기도록 고친 smoke(496569, A5000)는 75 클라이언트 모두 통과했고 exit 0, GPU 14.2 GB, 4라운드(매 라운드 평가) 470 s.
+- n1mb0606도 ariel에서 FedScout를 돌리므로 이 커밋 이후 코드를 쓴다.

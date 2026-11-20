@@ -186,7 +186,9 @@ class clientScout(Client):
                 self._feat_cache = torch.cat([sc.base[0](self._to(xb, yb)[0]) for xb, yb in DataLoader(sub, 256)])
                 ib = torch.arange(0, len(sub), max(1, len(sub) // 64))[:64]  # self-check: rows line up with samples
                 live = sc.base[0](torch.stack([sub[i][0] for i in ib.tolist()]).to(self.device))
-            assert torch.allclose(live, self._feat_cache[ib.to(live.device)], atol=1e-4), "feature cache misaligned"
+            # batch 256 vs 64 picks different cuDNN algorithms; with TF32 (Ampere, ariel) they differ by up to ~1.5e-3
+            # (features up to ~2.5), so atol=1e-4 failed on every client. A misaligned row differs by O(1).
+            assert torch.allclose(live, self._feat_cache[ib.to(live.device)], atol=1e-2), "feature cache misaligned"
             self._idx_ds = [(xb, yb, i) for i, (xb, yb) in enumerate(sub)]
         return DataLoader(self._idx_ds, self.batch_size, drop_last=True, shuffle=True,
                           pin_memory=str(self.device).startswith("cuda"))
