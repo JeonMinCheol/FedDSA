@@ -255,3 +255,28 @@
 - 본 표 묶음(`GARCH=c8 PREFIX=c8`, seed 0~2): 496016~18(`PACK_PAR=1`)로 냈다가 사용자 지시로 취소하고 `PACK_PAR=2`로 다시 냈다: 496045 CIFAR, 496046 Flowers, 496047 Tiny. 11-18에 같은 조건(묶음 3개 + 병렬 2)에서 FedAPEN이 cuDNN 오류로 죽은 적이 있어서, 첫 묶음 로그를 확인한다. run 이름 `c8_FedAPEN_nh_<dataset>_s<seed>` → TSV `fedapen_nh_c8_<dataset>_s<seed>.tsv`.
 - 클라이언트 수 실험 FedAPEN은 보류했던 494931~34를 취소하고 `FedAPEN_nh`로 다시 냈다(`SERIAL=1`, `max_parallel_clients 4`): 496019 nc50 jr0.5, 496020 nc100 jr0.5, 496021 nc100 jr0.3, 496022 nc100 jr0.1. run 이름 `c8jr<05|03|01>_FedAPEN_nh_Cifar100_<50|100>_s<seed>`.
 - 순서(nice): FedMRL Tiny(494854, 진행 중) → nh 본 표 3개(nice 0) → nh 클라이언트 수 4개(nice 200) → FedMRL 클라이언트 수 4개(494935~38, nice 400).
+
+### 11-20 15:50 FedScout 클라이언트 수 실험 나누기 (사용자 지시)
+a2019102224 계정 혼자 12개를 다 돌리면 GPU 1개로 차례대로 돌아서 11/25~28에 끝난다. 그래서 설정 단위로 나눈다(seed 0~2는 같은 계정에서 돌려 seed 간 GPU 차이를 줄인다).
+| 계정 | 맡는 설정 | 63 기준 시간 합 (3 seed) | 시작 시점 |
+|---|---|---|---|
+| a2019102224 | nc100 jr0.5, nc100 jr0.1 | 약 72 h | pFedMoE 클라이언트 수 실험 뒤(11/22 아침 전후) |
+| **n1mb0606** | **nc100 jr0.3, nc50 jr0.5** | 약 63 h | 지금 대기열이 끝난 뒤(11/23 새벽 예상) |
+- METHOD는 위 "확정" 결과를 따른다. 실행 방법은 위와 같다(`submit_baselines.sbatch`, `SERIAL=1`, `GARCH=c8`, `PREFIX=fs`). n1mb0606은 기본 `PYTHON_BIN` 그대로.
+- smoke(`FedScout_sa`/`_ph`, nc100 jr0.5, GR=3, mp4)는 a2019102224가 돌린다(496367, 496368, 11-20 18시 무렵 시작). 오류나 메모리 문제가 있으면 이 절에 적는다. n1mb0606은 그 결과를 보고 시작한다.
+- 결과 TSV 이름은 위 규칙(`fedscout_nc<명>jr<참여율>_s<seed>.tsv`) 그대로.
+
+### 2026-11-19 22:40 pFedMoE c8 CIFAR-100 3 seed 완료
+- 프로토콜(seed 평균 곡선 최고): **40.77 ± 0.52 @R370**, seed별 최고 40.92 / 41.35 / 40.61, R500 평균 40.45. FedSA 44.89보다 4.1점 낮다.
+- 곡선 `docs/figs/data/pfedmoe_c8_Cifar100_s{0,1,2}.tsv` (s1, s2 추가).
+- 큐: Slurm이 오래된 잡부터 시작해 Local_nc50_jr0p5(494930)가 먼저 돌고 있다. s0 13,133 s(3.6 h), 결과 최고 42.48. mp4 pFedMoE 잡은 아직 시작 전.
+
+### 2026-11-20 11:00 클라이언트 수 실험: Local 중간 결과 (CIFAR-100, bs32, 프로토콜)
+| 설정 | Local | FedSA bs32 (같은 설정) |
+|---|---|---|
+| nc50 jr0.5 | 42.63 ± 0.51 @R500 (3 seed) | 43.67 ± 0.08 @R400 |
+| nc100 jr0.5 | 40.50 @R420 (s0만) | 41.29 ± 0.23 @R490 |
+- Local이 FedSA보다 약 1점 낮다. nc50의 Local 곡선은 R500에서도 아직 오르는 중.
+- 속도: ariel-v2(A5000, CPU 할당 58/64, 남은 메모리 2 GB) 혼잡으로 seed당 3.6–4.2 h. 같은 설정의 FedSA(3090)는 1.8 h였다.
+- 큐 순서: Local nc100 jr0.5 s1–2 → Local nc100 jr0.3, jr0.1 → pFedMoE(mp4) Flowers, Tiny, 클라이언트 수 4개.
+- 11:10 대기 잡 8개(494943–44, 495130–35)에 `ExcNodeList=ariel-v2,v8,v10,v11,v12,k2`를 걸었다(CPU load 또는 메모리가 가장 붐비는 노드). 실행 중인 494942는 v2에 남아 있다.
