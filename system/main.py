@@ -868,6 +868,10 @@ if __name__ == "__main__":
                              "ensemble term), so shared+prior measures a shared model that got nothing from the private side")
     parser.add_argument('--apen_shared_head_lr_scale', type=float, default=1.0,
                         help="FedAPEN: lr multiplier for the shared model's head only (HP-fairness grid)")
+    parser.add_argument('--apen_teacher_classmean', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedAPEN control: the shared model's KL and ensemble terms use class-wise means of the private logits")
+    parser.add_argument('--apen_swap_rounds', type=str, default="",
+                        help="FedAPEN: comma-separated rounds whose shared model is kept and paired with the final private models")
     parser.add_argument('--apen_train_fraction', type=float, default=1.0,
                         help="FedAPEN analysis: train on this random fraction of each client's training part (local sample size axis)")
     parser.add_argument('--apen_dump_perclass', type=str2bool, nargs='?', const=True, default=False,

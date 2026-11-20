@@ -1,4 +1,5 @@
 import copy
+from flcore.clients.clientbase import load_item
 import numpy as np
 from flcore.clients.clientapen import clientAPEN
 from flcore.clients.clientbase import save_item
@@ -25,6 +26,23 @@ class FedAPEN(FML):
 
     def evaluate(self, *args, **kwargs):
         out = super().evaluate(*args, **kwargs)
+        swap = [int(v) for v in str(getattr(self.args, "apen_swap_rounds", "") or "").split(",") if v.strip()]
+        if swap:  # checkpoint swap (review round 2): keep shared snapshots, pair them with the final private models
+            r = (len(self.rs_test_acc) - 1) * self.eval_gap
+            if r in swap:
+                if not hasattr(self, "_shared_snaps"):
+                    self._shared_snaps = {}
+                g = load_item(self.role, 'global_model', self.save_folder_name)
+                self._shared_snaps[r] = {k: v.detach().cpu().clone() for k, v in g.state_dict().items()}
+            if r >= self.global_rounds and getattr(self, "_shared_snaps", None):
+                for rs, st in sorted(self._shared_snaps.items()) + [(r, {k: v.detach().cpu().clone() for k, v in
+                                                                        load_item(self.role, 'global_model', self.save_folder_name).state_dict().items()})]:
+                    res = [c.swap_eval(st) for c in self.clients]
+                    n = sum(x["n"] for x in res)
+                    acc = {k: 100 * sum(x[k] for x in res) / n for k in ("shared", "shared_prior", "ensemble")}
+                    print(f"APENSwap shared@R{rs} private@R{r}: shared={acc['shared']:.2f} shared+prior={acc['shared_prior']:.2f} "
+                          f"ensemble={acc['ensemble']:.2f} margin={acc['ensemble'] - acc['shared_prior']:+.2f} "
+                          f"w*_mean={np.mean([x['w'] for x in res]):.2f} tau*_mean={np.mean([x['tau'] for x in res]):.2f}")
         d = [c.diag for c in self.clients if getattr(c, "diag", None)]
         if d:
             n = sum(x[2] for x in d)

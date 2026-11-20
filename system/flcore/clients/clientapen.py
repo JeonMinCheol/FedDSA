@@ -37,6 +37,9 @@ class clientAPEN(clientFML):
         # control (review 11-20): the shared model learns from CE only, so whatever it knows did not come from the private
         # models (KL and ensemble terms dropped for the shared model; the private side is unchanged)
         self.shared_ce_only = bool(getattr(args, "apen_shared_ce_only", False))
+        # control (review round 2): the shared model sees the private model only through class-wise means of its logits
+        # (per batch), so class-level information is kept and input-specific information is removed
+        self.teacher_classmean = bool(getattr(args, "apen_teacher_classmean", False))
 
     def shared_model(self):
         """The aggregated shared model; with --apen_personal_head the client keeps its own head (body FedAvg'd only)."""
@@ -91,9 +94,13 @@ class clientAPEN(clientFML):
                 out, out_g = model(x), global_model(x)
                 loss = self.loss(out, y) + self.KLb(F.log_softmax(out, 1), F.softmax(out_g.detach(), 1)) \
                     + self.loss(wp * out + (1 - wp) * out_g.detach(), y)
+                t = out.detach()
+                if self.teacher_classmean:
+                    cm = torch.zeros(self.num_classes, t.shape[1], device=t.device, dtype=t.dtype).index_add_(0, y, t)
+                    t = (cm / torch.bincount(y, minlength=self.num_classes).clamp_min(1)[:, None].to(t.dtype))[y]
                 loss_g = self.loss(out_g, y) if self.shared_ce_only else (
-                    self.loss(out_g, y) + self.KLb(F.log_softmax(out_g, 1), F.softmax(out.detach(), 1))
-                    + self.loss(wp * out.detach() + (1 - wp) * out_g, y))
+                    self.loss(out_g, y) + self.KLb(F.log_softmax(out_g, 1), F.softmax(t, 1))
+                    + self.loss(wp * t + (1 - wp) * out_g, y))
                 optimizer.zero_grad()
                 optimizer_g.zero_grad()
                 (loss + loss_g).backward()
@@ -160,3 +167,31 @@ class clientAPEN(clientFML):
         self.diag_cls["train_n"] = torch.bincount(torch.as_tensor([int(y) for _, y in self.train_part]), minlength=C).tolist()
         auc = metrics.roc_auc_score(np.concatenate(y_true), np.concatenate(y_prob), average='micro')
         return test_acc, test_num, auc
+
+    def swap_eval(self, shared_state):
+        """Checkpoint swap (review round 2): my current (final) private model with an earlier shared-model snapshot.
+        The ensemble weight w and the prior strength tau are both picked on my held-out 5% (accuracy, grid, ties ->
+        smaller value); returns test correct counts for shared, shared + tau* log prior, and the w* ensemble."""
+        model = load_item(self.role, 'model', self.save_folder_name)
+        g = self.shared_model()
+        g.load_state_dict(shared_state)
+        model.eval()
+        g.eval()
+
+        def logits(loader):
+            ps, gs, ys = [], [], []
+            with torch.no_grad():
+                for x, y in loader:
+                    x = x.to(self.device)
+                    ps.append(model(x).float().cpu()); gs.append(g(x).float().cpu()); ys.append(y)
+            return torch.cat(ps), torch.cat(gs), torch.cat(ys)
+
+        pv, gv, yv = logits(DataLoader(self.val_data, 256))
+        pt, gt, yt = logits(self.load_test_data())
+        lp = self._log_prior.cpu()
+        ws, taus = [i / 20 for i in range(21)], (0.0, 0.5, 1.0, 1.5, 2.0)
+        w = max(ws, key=lambda a: (int(((a * pv + (1 - a) * gv).argmax(1) == yv).sum()), -a))
+        tau = max(taus, key=lambda a: (int(((gv + a * lp).argmax(1) == yv).sum()), -a))
+        return {"n": len(yt), "shared": int((gt.argmax(1) == yt).sum()),
+                "shared_prior": int(((gt + tau * lp).argmax(1) == yt).sum()),
+                "ensemble": int(((w * pt + (1 - w) * gt).argmax(1) == yt).sum()), "w": w, "tau": tau}
