@@ -1,10 +1,12 @@
 """Compose per-step device measurements into whole-run device training time / energy per client (CIFAR-100 split,
 HtFE-img-8: client i runs arch i % 8). Methods (500 rounds, 1 local epoch):
-  FedScout 2-stage: 490 x scout_train + 10 x learner_post_k30      every-round learner: 490 x every_round_k85 + 10 x learner_post_k30
+  FedScout 2-stage: 490 x scout_train + E_LOCAL (= 50, final) x learner_post_k30
+  every-round learner (500 rounds): 490 x every_round_k85 + 10 x learner_post_k30
   FedAPEN: 500 x fedapen        private-only baselines (LG-FedAvg, FedProto, FedTGP, FedSA): 500 x local
 per epoch = n_i / B steps. Round wall-clock = slowest client (straggler). usage: python device_compose.py ../docs/figs/data/device/orin_cifar.csv Cifar100"""
 import csv, json, sys
 import numpy as np
+E_LOCAL = 50  # local learner epochs after the R490 freeze (final config, 11-20)
 *paths, d = sys.argv[1:]
 rows = [r for p in paths for r in csv.DictReader(open(p))]
 ms = {(r["arch"], r["workload"]): float(r["ms_per_step"]) for r in rows}
@@ -18,7 +20,7 @@ def total(a, k, which):
     t = ms if which == "s" else J
     s = lambda w, arch=a: t[(arch, w)] if (arch, w) in t else t[("-", w)]
     steps = k / B
-    return {"FedScout 2-stage": steps * (490 * s("scout_train") + 10 * s("learner_post_k30")),
+    return {"FedScout 2-stage": steps * (490 * s("scout_train") + E_LOCAL * s("learner_post_k30")),
             "every-round learner": steps * (490 * s("every_round_k85") + 10 * s("learner_post_k30")),
             "FedAPEN": steps * 500 * s("fedapen"),
             "private-only (LG/Proto/TGP/SA)": steps * 500 * s("local")}

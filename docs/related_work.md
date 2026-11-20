@@ -94,6 +94,13 @@
 
 ## 8. 최근 이기종 FL 지식 공유 형태와 survey
 
+- 외부 리뷰(11-20)가 추가하라고 한 것(존재 확인함, 초록 수준):
+
+| 연구 | 출처 | URL | 내용 | 관계 | 읽음 |
+|---|---|---|---|---|---|
+| FedSCE | CVPR 2025 | https://openaccess.thecvf.com/content/CVPR2025/html/Zhang_Subspace_Constraint_and_Contribution_Estimation_for_Heterogeneous_Federated_Learning_CVPR_2025_paper.html | 보조(auxiliary) 모델 기반 HtFL의 로컬 과적합과 집계 편향: 로컬 갱신을 부분공간으로 제한, 보조 모델 갱신 거리로 기여도 가중 집계. Office10 등 feature/label skew | 작은 공유 모델 계열. 로컬 과적합 지적이 우리 따름정리 2와 맞닿음 | [초록] |
+| FedEMoE | ICML 2026 | https://proceedings.mlr.press/v306/du26d.html | 개인화 expert + 크기 조절되는 공유 expert로 공유/개인 지식 분리 | 공유·개인 분리 계열. 우리 분해(공유/private/비율)와 비교 필요 | [초록] |
+
 | 연구 | 출처 | URL | 내용 | 관계 | 읽음 |
 |---|---|---|---|---|---|
 | FedTopo | arXiv 2026 | https://arxiv.org/pdf/2607.26801 | 지식 공유를 파라미터·prototype·증류로 분류, 구조가 다르면 공통 좌표 공간이 유지되지 않는다고 지적하고 표현 간 관계를 공유 | 관찰 1과 같은 문제의식. **본문 확인 필요** | [요약] |

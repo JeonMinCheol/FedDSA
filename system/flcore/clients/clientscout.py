@@ -250,7 +250,8 @@ class clientScout(Client):
                 self.realign(1, sc)
         sc, model = sc.to(self.device).eval(), self.model.to(self.device).eval()
         out = {}
-        for tag, loader in (("test", self.load_test_data()), ("held", DataLoader(self.split()[1], 256))):
+        for tag, loader in (("test", self.load_test_data()), ("held", DataLoader(self.split()[1], 256)),
+                            ("train", DataLoader(self.split()[0], 256))):  # train: fits the class-wise bias diagnostic
             lt, lp, ys = [], [], []
             for x, y in loader:
                 x, y = self._to(x, y)

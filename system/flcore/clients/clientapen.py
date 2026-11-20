@@ -22,13 +22,21 @@ class clientAPEN(clientFML):
         perm = torch.randperm(len(data), generator=torch.Generator().manual_seed(self.id)).tolist()
         n_val = max(1, int(len(data) * 0.05))  # paper/code default ratio_train_adaptability = [0.95, 0.05]
         self.val_data = Subset(data, perm[:n_val])
-        self.train_part = Subset(data, perm[n_val:])
+        # local-sample-size axis (review 11-20): keep a random fraction of the training part (label proportions kept in
+        # expectation); the validation 5% and the test set are unchanged
+        frac = float(getattr(args, "apen_train_fraction", 1.0))
+        rest = perm[n_val:]
+        self.train_part = Subset(data, rest[:max(1, int(round(len(rest) * frac)))])
         self.w = torch.tensor([0.5], device=self.device, requires_grad=True)  # weight of the private model
         self.w_opt = torch.optim.SGD([self.w], lr=1e-3)
         self.KLb = nn.KLDivLoss(reduction="batchmean")
         self._w_fresh = False  # weight already learned for the current aggregated shared model
         self.personal_head = bool(getattr(args, "apen_personal_head", False))
         self.shared_lr_scale = float(getattr(args, "apen_shared_lr_scale", 1.0))  # fairness control for our twin lr x2
+        self.shared_head_lr_scale = float(getattr(args, "apen_shared_head_lr_scale", 1.0))  # HP-fairness grid (head only)
+        # control (review 11-20): the shared model learns from CE only, so whatever it knows did not come from the private
+        # models (KL and ensemble terms dropped for the shared model; the private side is unchanged)
+        self.shared_ce_only = bool(getattr(args, "apen_shared_ce_only", False))
 
     def shared_model(self):
         """The aggregated shared model; with --apen_personal_head the client keeps its own head (body FedAvg'd only)."""
@@ -66,7 +74,11 @@ class clientAPEN(clientFML):
         self._w_fresh = False
         wp = float(self.w)
         optimizer = torch.optim.SGD(model.parameters(), lr=self.learning_rate)
-        optimizer_g = torch.optim.SGD(global_model.parameters(), lr=self.learning_rate * self.shared_lr_scale)
+        lr_g = self.learning_rate * self.shared_lr_scale
+        optimizer_g = torch.optim.SGD(
+            [{"params": [q for n, q in global_model.named_parameters() if not n.startswith("head.")], "lr": lr_g},
+             {"params": [q for n, q in global_model.named_parameters() if n.startswith("head.")], "lr": lr_g * self.shared_head_lr_scale}],
+            lr=lr_g)
         model.train()
         global_model.train()
         start_time = time.time()
@@ -79,8 +91,9 @@ class clientAPEN(clientFML):
                 out, out_g = model(x), global_model(x)
                 loss = self.loss(out, y) + self.KLb(F.log_softmax(out, 1), F.softmax(out_g.detach(), 1)) \
                     + self.loss(wp * out + (1 - wp) * out_g.detach(), y)
-                loss_g = self.loss(out_g, y) + self.KLb(F.log_softmax(out_g, 1), F.softmax(out.detach(), 1)) \
-                    + self.loss(wp * out.detach() + (1 - wp) * out_g, y)
+                loss_g = self.loss(out_g, y) if self.shared_ce_only else (
+                    self.loss(out_g, y) + self.KLb(F.log_softmax(out_g, 1), F.softmax(out.detach(), 1))
+                    + self.loss(wp * out.detach() + (1 - wp) * out_g, y))
                 optimizer.zero_grad()
                 optimizer_g.zero_grad()
                 (loss + loss_g).backward()
@@ -110,6 +123,7 @@ class clientAPEN(clientFML):
         # per-class correct counts of private / shared / shared+prior / ensemble, for the class-frequency analysis
         # (which local classes does the private model actually help on?)
         taus = (0.5, 1.5, 2.0, 3.0)  # g + tau * log prior; label-shift Bayes adjustment predicts tau = 1 (shared_prior)
+        nll = {k: 0.0 for k in ("private", "shared", "shared_prior", "ensemble")}  # test log loss (sum), model quality
         cls = {k: torch.zeros(C, dtype=torch.long) for k in ("n", "private", "shared", "shared_prior", "ensemble")
                + tuple(f"tau{t}" for t in taus)}
         with torch.no_grad():
@@ -118,6 +132,8 @@ class clientAPEN(clientFML):
                 p, g = model(x), global_model(x)
                 output = wp * p + (1 - wp) * g
                 yc = y.cpu()
+                for k, z in (("private", p), ("shared", g), ("shared_prior", g + self._log_prior), ("ensemble", output)):
+                    nll[k] += float(F.cross_entropy(z.float(), y, reduction="sum"))
                 cls["n"] += torch.bincount(yc, minlength=C)
                 for k, z in ((("private", p), ("shared", g), ("shared_prior", g + self._log_prior), ("ensemble", output))
                              + tuple((f"tau{t}", g + t * self._log_prior) for t in taus)):
@@ -130,6 +146,16 @@ class clientAPEN(clientFML):
                 y_prob.append(output.cpu().numpy())
                 y_true.append(label_binarize(y.cpu().numpy(), classes=np.arange(self.num_classes)))
         self.diag = (cp, cg, test_num, wp, cgp)
+        self.diag_nll = nll
+        vc = {"ensemble": 0, "shared_prior": 0, "n": 0}  # held-out 5% (also used to fit w): checkpoint selection on validation
+        with torch.no_grad():
+            for x, y in DataLoader(self.val_data, 256):
+                x, y = x.to(self.device), y.to(self.device)
+                p, g = model(x), global_model(x)
+                vc["ensemble"] += int(((wp * p + (1 - wp) * g).argmax(1) == y).sum())
+                vc["shared_prior"] += int(((g + self._log_prior).argmax(1) == y).sum())
+                vc["n"] += y.shape[0]
+        self.diag_val = vc
         self.diag_cls = {k: v.tolist() for k, v in cls.items()}
         self.diag_cls["train_n"] = torch.bincount(torch.as_tensor([int(y) for _, y in self.train_part]), minlength=C).tolist()
         auc = metrics.roc_auc_score(np.concatenate(y_true), np.concatenate(y_prob), average='micro')

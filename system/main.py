@@ -64,7 +64,7 @@ def str2bool(value):
 
 def fedavg_cnn_input_dim(dataset):
     """Return the flattened dimension before FedAvgCNN's first FC layer."""
-    image_size = 64 if str(dataset).lower() in {"tinyimagenet", "flowers102"} else 32
+    image_size = 64 if str(dataset).lower() in {"tinyimagenet", "flowers102"} or str(dataset).lower().startswith("domainnet") else 32
     spatial = (image_size - 5 + 1) // 2
     spatial = (spatial - 5 + 1) // 2
     return 64 * spatial * spatial
@@ -861,6 +861,15 @@ if __name__ == "__main__":
     parser.add_argument('--apen_native_head', type=str2bool, nargs='?', const=True, default=False,
                         help="FedAPEN: the shared model keeps its own classifier on its native features (no pool to -fd and "
                              "-fd x C head); FedAPEN mixes only logits, so nothing needs the common feature size")
+    parser.add_argument('--fml_shared_ce_only', type=str2bool, nargs='?', const=True, default=False,
+                        help="FML control: shared model trains on CE only and the private KL target is detached")
+    parser.add_argument('--apen_shared_ce_only', type=str2bool, nargs='?', const=True, default=False,
+                        help="FedAPEN control: the shared model trains on CE only (no KL from the private model, no "
+                             "ensemble term), so shared+prior measures a shared model that got nothing from the private side")
+    parser.add_argument('--apen_shared_head_lr_scale', type=float, default=1.0,
+                        help="FedAPEN: lr multiplier for the shared model's head only (HP-fairness grid)")
+    parser.add_argument('--apen_train_fraction', type=float, default=1.0,
+                        help="FedAPEN analysis: train on this random fraction of each client's training part (local sample size axis)")
     parser.add_argument('--apen_dump_perclass', type=str2bool, nargs='?', const=True, default=False,
                         help="FedAPEN: write per-client per-class correct counts (private, shared, shared+prior, ensemble) and "
                              "local train class counts to logs/<goal>_perclass.json at every evaluation")

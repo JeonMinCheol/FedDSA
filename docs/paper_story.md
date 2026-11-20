@@ -15,13 +15,13 @@
 | 항목 | 결정 | 근거·위치 |
 |---|---|---|
 | 제목 | Rethinking Knowledge Sharing in Model-Heterogeneous Federated Learning: Share a Tiny Common Model, Specialize Locally | 0절 |
-| 투고처 | IEEE TMC (안 되면 IoT-J). 실기기 평가와 이유 분석 필수 | 메모리, 6절 |
+| 투고처 | **ICML 2027 먼저(초록 2027-01-14, 본문 01-22 AoE), 떨어지면 TMC**(11-20 밤 사용자). 사용자 2027-08 졸업, 학위논문은 이 연구로 | 아래 ICML 일정 |
 | 기여 | 진단(어떤 통로로도 private이 공유 + log 비율을 넘지 못함) + 그 진단이 정당화하는 설계 + 효율 | 7절, `docs/related_work.md` |
 | 이론 | 명제 1(label shift: 공유 + log 비율 = 클라이언트별 Bayes 최적), 명제 2(feature shift에서만 private이 필요) | `docs/theory_label_shift.md` |
-| 최종 방법 | 2단계 FedScout: c8 scout(projector 없음) 전체 FedAvg, head lr ×8, R490 동결·개인화, learner는 동결 뒤에만 학습, screening τ 0.5, cascade | 4절. CIFAR 66.05(매 라운드 learner 66.23), 학습 연산 FedAPEN 대비 6.7배 적음 |
+| 최종 방법 | 2단계 FedScout: c8 scout(projector 없음) 전체 FedAvg, head lr ×8, R490 동결·개인화, learner는 동결 뒤에만 학습, **로컬 단계 E = 50 epoch(`-gr 540`, 11-20 밤 확정)**, screening τ 0.5, cascade | 4절. Flowers 69.62(매 라운드 learner 70.15), 학습 연산 FedAPEN 대비 5.8배 적음. E 근거: 10/50/100 → 69.32/69.62/69.52, 기여 −0.28/+0.91/+0.81 |
 | 보고 규칙 | 동결 뒤 로컬 학습은 통신 0이므로 "490R 연합 + E 로컬 epoch"로 따로 표시(그림은 점선) | 8절 |
 | 기준선 | 원 논문 lr. 공유 모델 방식은 c8 | 메모리 |
-| 기기 | Raspberry Pi 5(CPU 학습), Jetson Nano(저사양 GPU), Jetson Orin Nano Super(GPU), Hailo-8(NPU 추론) | 기기 실측 절 |
+| 기기 | **Raspberry Pi 5(CPU 학습·추론), Jetson Orin Nano Super(GPU 학습·추론)** — 둘 다 측정 완료. Jetson Nano 제외(4GB + 다른 계정 데스크톱으로 r34부터 스왑), Hailo 생략(Dataflow Compiler가 연구실에 없음; 11-20 사용자) | 기기 실측 절 |
 
 **진행 중 (11-20 저녁)**
 | 실험 | 판정 | 예상 |
@@ -29,13 +29,34 @@
 | 이유 분석 B·C·D: FedAPEN `an_*` 6개(클래스 빈도 3분위, Dir α 0.3/1.0, IID, feature shift, 보정 강도 τ) | 8절 사전 등록 기준 | 20~21시 |
 | feature shift에서 2단계 FedScout(`lafsa8_*fs`)와 매 라운드 learner 상한(`npsa8_*fs`) | 데이터 양 vs label shift 설명 | 18시 / 21시 |
 | Flowers 동결 뒤 로컬 50·100 epoch(`lafsa8L*`) | 로컬 epoch 수 E 결정 | 19시 반 |
-| 기기: Pi 5 64px·r101/r152, Jetson Nano 전체 | 기기 표 완성 | 오늘 밤 |
+| 기기: Pi 5 완료, Orin 완료, Jetson Nano 제외 | 기기 표 완성 | 완료 |
 
-**남은 계획 (순서대로)**
+**ICML 2027 일정 (본문 마감 2027-01-22까지 약 9주)**
+| 기간 | 할 일 |
+|---|---|
+| 11-21 ~ 11-27 | 본 결과 완성(63: Tiny, ablation, 일반화 / ariel: 기준선 11-24), 이유 분석 seed 3개, **실제 feature shift 데이터 준비**(DomainNet 10클래스 부분집합(FedBN 방식) 또는 Office-Caltech10, Digit5 중 선택) |
+| 11-28 ~ 12-04 | **진단 확대**: FML·FedMRL·pFedMoE에 공유 + 비율 진단 추가(Dir 0.1, feature shift). 실제 feature shift에서 FedScout·FedAPEN 진단 |
+| 12-05 ~ 12-18 | **"언제 private이 이기나" 정량화**: 공유 모델 품질(R330 → R500에서 순위가 뒤집힘)과 클라이언트당 데이터 양(50·100명 결과)의 함수로. 그림·표 확정 |
+| 12-19 ~ 01-08 | ICML 형식 원고(**본문 8쪽** + 참고문헌·부록) 초안, 모의 심사(academic-paper-reviewer)로 수정 |
+| 01-14 / 01-22 | 초록 등록 / 본문 제출 |
+- ICML은 상호 심사(저자 중 심사 자격자 의무)와 제출 수 제한이 있다. 초록 등록 전에 확인한다.
+
+**ariel 기준선은 11-24 무렵 완료 예정(11-20 사용자).** 그동안 63 노드 GPU 5장으로 우리 실험을 한다(아래 순서).
+
+**63 노드 계획 (11-20 저녁 작성, 지금 큐가 빠지는 11-21 오후부터)**
+| 순서 | 실험 | run 수 | 비고 |
+|---|---|---|---|
+| 0 | 로컬 epoch E 확정 | — | **E = 50 확정(11-20 밤)**. 아래 run은 모두 `-gr 540`, 큐 `queue_final.py`(36개: CIFAR 본 표 3, ablation 12, 일반화 18, Tiny 3)가 B·C 큐 뒤에 대기 |
+| 1 | 본 표 최종 구성: Tiny × 3, CIFAR × 3(E가 10이 아니면) | 3~6 | Tiny는 GPU 단독 |
+| 2 | ablation (CIFAR × 3): 평균 없음, 개인 head(backbone만 공유), head lr ×1, 로컬 단계 screening 끔 | 12 | scout 단독(= c8 FedAvg + head FT)과 매 라운드 learner는 기존 로그로 대체 |
+| 3 | 일반화 (CIFAR × 3): HtFE 2/3/4/5/9, lowend | 18 | 기준선은 예전 원고 표 1을 그대로 쓴다(11-20 사용자: 지금과 같은 설정으로 돌린 값) |
+| 4 | 그림·표: 그림 3종 OURS 교체(로컬 구간 점선), 효율 표(FLOPs + Pi/Orin 실측), 이유 분석 표(seed 3개), 상한 분석 그림, τ 그림 | — | 계산만 |
+| 5 | 로컬 에폭 (부록, 맨 마지막) | 9 | |
+
 1. E 결정 → 최종 구성으로 본 표 Tiny × 3 seed, ablation 재정의(평균 없음, 동결 시점, 개인 head, head lr ×1), 일반화(HtFE 2/3/4/5/9, lowend), 클라이언트 수(ariel a2019102224 `METHOD=FedScout_sa`), 로컬 에폭은 맨 마지막.
 2. 그림 3종의 OURS를 `lafsa8`로 교체, 로컬 구간 점선, 효율 표(FLOPs + 기기 시간·에너지·가장 느린 클라이언트).
 3. 이유 분석 결과로 상한 분석 그림("어떤 통로도 공유 + 비율을 넘지 못함")과 τ 그림.
-4. Hailo: Dataflow Compiler가 있는 서버에서 ONNX → HEF 컴파일 후 추론·cascade 지연 측정(서버 위치 확인 필요). J7-C 전력계로 벽 전력 재측정(현재 블루투스 연결 안 됨).
+4. J7-C 전력계로 벽 전력 재측정(현재 블루투스 연결 안 됨; 연구실 jhs님이 같은 측정기로 전력을 잰 흔적이 있어 켜는 방법 확인). Hailo는 생략(11-20).
 5. 가장 가까운 논문 본문 정독(PersFL, ProxyFL, FedType, FedRoD, Xu & Huang, FedTopo) → 원고 작성.
 
 ## 1. 한 줄
@@ -81,11 +102,11 @@ c8 scout(MLPerf Tiny ResNet-8 크기), backbone만 FedAvg + 개인 head(매 라�
 | Local | 관찰 1의 기준점 | 다른 노드에서 실행했다고 기록됨. **결과 확인 필요** |
 | **그림 3종** | 정확도 대 라운드 / 통신량 / 학습 연산량 (seed 평균 ± 표준편차) | 초안 완료(`docs/figs/*_vs_acc_draft.png`). 본 표 run이 끝나면 다시 그림 |
 | **효율 표** | 라운드당 통신, 목표 정확도까지의 통신, 학습 FLOPs(모델별 실측), 추론 연산(cascade로 private 실행 비율) | 계산 스크립트 완료(`system/comm_vs_acc.py`, `system/flops_table.py`). 표 정리만 남음 |
-| **기기 실측** | Raspberry Pi(CPU 학습), Jetson Nano(GPU 학습, tegrastats 전력), Hailo NPU(추론만). 학습: scout 한 step(연합 단계), 동결 뒤 learner 한 step(screening 30%/100%), 매 라운드 learner(npsa8), Local, FedAPEN. 추론: scout, private, cascade(= scout + 미확신 비율 × private). 전체 기기 시간 = epoch 수 × (n/B) × step 시간으로 조합 | **사용자가 직접 측정.** `system/device_bench.py`를 11-20 최종 구성(c8 native scout, projector 없음)으로 갱신, `--size 32/64 --classes 100/102/200`, Hailo용 `--export_onnx`(최신 torch는 `pip install onnx` 필요, 여기서는 export 미검증) |
+| **기기 실측** | Raspberry Pi 5(CPU, 전력은 PMIC 레일 합), Jetson Orin Nano Super(GPU, tegrastats VDD_IN). 학습: scout 한 step(연합 단계), 동결 뒤 learner 한 step(screening 30%/100%), 매 라운드 learner, Local, FedAPEN. 추론: scout, private, cascade(= scout + 미확신 비율 × private). 전체 기기 시간 = epoch 수 × (n/B) × step 시간으로 조합 | **완료(11-20, Claude 원격 실행)**: `docs/figs/data/device/`, `system/device_compose.py`. Jetson Nano 제외, Hailo 생략. 벽 전력(J7-C)은 미측정 |
 | **분석 표 (관찰 2)** | FedAPEN: 앙상블 / private / 공유 / 공유 + 비율. FedScout: 결합 / scout 단독 / learner | 로그로 작성 가능(run 불필요). Tiny FedAPEN: 공유 + 비율 45.7 > 앙상블 39.1, FedScout 결합 = scout |
 | **ablation (CIFAR × 3 seed)** | screening 끔 / 재정렬 끔 / I1 learner / head까지 평균(shareall, R490에 개인화) / 평균 없음 / scout lr×1 | 대기열(우선순위 3번째) |
 | 일반화: 클라이언트 수·참여율 | 50명 join 0.5, 100명 join 0.5·0.3·0.1 × 3 seed | 대기열. 기준선은 ariel이 같은 설정으로 측정 중 |
-| 일반화: 모델 이질성 | HtFE 2·3·4·5·9, lowend × 3 seed | 대기열. 기준선은 예전 원고 표 1 재사용 예정 → **프로토콜 일치 확인 필요** |
+| 일반화: 모델 이질성 | HtFE 2·3·4·5·9, lowend × 3 seed | 11-21 오후 큐 예정. 기준선은 예전 원고 표 1 재사용(같은 설정으로 돌린 값, 11-20 사용자 확인) |
 
 ### 5.2 부록
 
@@ -177,8 +198,78 @@ FedAPEN c8 native head(본 표 버전), seed 0, 500R, 나머지 프로토콜 동
 |---|---|---|---|---|
 | Orin, CIFAR: 클라이언트 평균 시간 / 가장 느린 클라이언트 / 평균 에너지 | 0.18 h / 0.22 h / 4.8 kJ | 0.96 h / 2.68 h / 31.8 kJ | 0.98 h / 2.62 h / 32.4 kJ | 0.82 h / 2.46 h / 27.4 kJ |
 | Orin, Flowers | 0.04 h / 0.04 h / 1.5 kJ | 0.14 h / 0.38 h / 7.5 kJ | 0.14 h / 0.38 h / 7.7 kJ | 0.11 h / 0.35 h / 5.9 kJ |
-| Pi 5, CIFAR (r101·r152 클라이언트 4명 제외, 측정 중) | 2.40 h / 2.81 h / 35.9 kJ | 14.17 h / 33.27 h / 258 kJ | 14.46 h / 33.88 h / 290 kJ | 12.34 h / 31.76 h / 256 kJ |
+| Pi 5, CIFAR (8개 모델 전부, 18시 완료) | 2.21 h / 2.93 h / 40.8 kJ | 27.21 h / 91.34 h / 528 kJ | 27.80 h / 90.85 h / 589 kJ | 25.85 h / 90.91 h / 562 kJ |
+| Pi 5, Flowers | 1.64 h / 1.90 h / 29.6 kJ | 6.35 h / 16.38 h / 130 kJ | 6.38 h / 16.95 h / 137 kJ | 4.84 h / 15.20 h / 105 kJ |
 
-- 읽는 법: 평균 시간 기준 FedAPEN 대비 Orin 5.4배(CIFAR)·3.8배(Flowers), Pi 6.0배. **가장 느린 클라이언트 기준(연합 라운드 시간을 정하는 낙오자)은 약 12배**: 연합 단계에서는 모든 기기가 같은 c8만 학습하므로 모델 이질성이 라운드 시간에 영향을 주지 않는다.
+- 읽는 법: 평균 시간 기준 FedAPEN 대비 Orin 5.4배(CIFAR)·3.8배(Flowers), Pi 12.6배(CIFAR)·3.9배(Flowers). Pi CIFAR의 가장 느린 클라이언트(r152)는 FedAPEN 90.9 h vs FedScout 2.9 h(31배). **가장 느린 클라이언트 기준(연합 라운드 시간을 정하는 낙오자)은 약 12배**: 연합 단계에서는 모든 기기가 같은 c8만 학습하므로 모델 이질성이 라운드 시간에 영향을 주지 않는다.
 - GPU(Orin)에서는 배치 32가 작아 screening(30%)이 learner 한 step 시간을 거의 줄이지 못한다(r18 42.5 ms vs 전체 37.0 ms). 절감은 연합 중 learner를 학습하지 않는 데서 나온다. CPU(Pi)에서는 screening이 step 시간을 약 절반으로 줄인다(r18 729 vs 1495 ms).
-- 남은 것: Pi 64px·r101/r152(진행 중), Hailo 추론(컴파일러 위치 확인 필요), J7-C 전력계(블루투스 연결 안 됨), Jetson Nano(PyTorch 없음).
+- 남은 것: J7-C 전력계(블루투스 연결 안 됨). Pi 64px·r101/r152는 완료, Jetson Nano는 제외, Hailo는 생략(11-20 사용자).
+
+### 이유 분석 B~D 재실행: 기본 FedAPEN (11-20 18시 반, 사용자 지시)
+- native head FedAPEN(`an_*`)은 R330에 공유 모델이 14%로 약해서, Dir 0.1에서 앙상블이 공유 + 비율보다 2.4 높았다(명제 1의 전제인 "공유 모델이 사후확률을 잘 추정"이 깨진 상태). 그래서 공유 모델이 강한 기본 FedAPEN(pool projector 512 + 512×C head, 본 표 FedAPEN)으로 같은 6개 데이터를 다시 돌린다: `anp_<데이터>_s0`. 사전 등록 기준은 위 표와 같다.
+- `an_*`는 끝까지 두고 "공유 모델이 약할 때"의 대조로 쓴다(공유 모델 정확도별 차이 그림).
+
+### 결과 (11-20 19시 반)
+**이유 분석, native head FedAPEN `an_*` (R500 최종, seed 0)** — R330 중간값(앙상블 > 공유 + 비율)은 공유 모델이 덜 학습된 탓이었고, R500에서는 예측대로 뒤집혔다.
+
+| 실험 | 데이터 | private | 공유 | 공유 + 비율 | 앙상블 | 앙상블 − (공유 + 비율) | 판정 |
+|---|---|---|---|---|---|---|---|
+| B | Dir 0.1 | 43.86 | 20.24 | **46.99** | 45.50 | −1.49 | 통과: 모든 빈도 구간에서 공유 + 비율 ≥ private (다수 +3.35, 중간 +1.97, 소수 +0.49) |
+| C | Dir 0.3 | 31.84 | 29.60 | **46.19** | 41.32 | −4.87 | 통과 |
+| C | Dir 1.0 | 20.18 | 34.19 | **40.94** | 35.69 | −5.25 | 통과. 비율 이득 +26.8(α0.1) → +16.6(0.3) → +6.8(1.0) |
+| D | IID + feature shift | 10.34 | 16.58 | 15.85 | **19.09** | **+3.24** | 통과(> +1): feature shift에서는 private이 비율 이상을 더함 |
+| D-대조 | IID | 11.83 | 33.49 | 32.29 | 33.52 | +1.23 | **기준(≤ 1) 근소 미달.** 단 공유 단독 대비 +0.03 → private 기여 0. 미달분은 IID에서 추정 비율의 잡음이 공유 + 비율을 깎은 것 |
+| D-혼합 | Dir 0.1 + feature shift | 41.30 | 11.63 | 33.01 | **41.89** | **+8.88** | 통과 |
+
+- 보정 강도 τ: 최적 τ = 1(Dir 0.1: 46.99, 0.5는 46.14, 1.5는 45.02), Dir 0.3도 1, Dir 1.0은 0.5(41.17)와 1(40.94)이 거의 같음 → 명제 1의 Bayes 보정(τ = 1) 예측과 일치.
+- 기본 FedAPEN(`anp_*`)으로 같은 표를 다시 확인 중(자정 무렵).
+
+**FedScout learner 기여(결합 − scout, seed 0)**: 라벨 이동만(CIFAR) 매 라운드 +0.6 / 2단계 +0.5 → IID + feature shift 매 라운드 **+1.13** / 2단계 +0.16 → Dir 0.1 + feature shift 매 라운드 **+3.15** / 2단계 **+1.96**. 사전 기준(상한에서 > +1) 두 설정 모두 통과(IID + shift는 근소). label shift 설명과 같은 방향.
+
+**Flowers 동결 뒤 로컬 epoch (seed 3개)**
+| 구성 | seed 평균 곡선 최고 | 마지막 평가 | learner 기여(마지막) | 학습 연산 (FedAPEN 대비) |
+|---|---|---|---|---|
+| 490R + 10 로컬 (lafsa8) | 69.32 ± 1.27 | 68.21 | −0.28 | 43.8 TFLOPs (6.6배 적음) |
+| 490R + 50 로컬 (lafsa8L50) | 69.62 ± 0.99 | 69.62 | +0.91 | 49.8 TFLOPs (5.8배 적음) |
+| 매 라운드 learner (npsa8) | 70.15 ± 1.25 | 69.97 | +1.28 | 257 TFLOPs (1.1배) |
+- 50 로컬 epoch이면 npsa8과 차이 −0.53(최고), −0.35(마지막). 100 epoch은 seed 0만 끝났고 기여 +0.82로 50과 같음 → 50에서 포화로 보임(seed 3개 확인 중).
+
+### feature shift seed 3개 (11-20 19시 40분, 사용자: "논문에 넣어야지")
+- 2단계 FedScout `lafsa8L50_{Cifar100_iid_fs,Cifar100_fs}_s{0,1,2}`: `-gr 540`, R490 동결 뒤 로컬 50 epoch. R500 평가 = 로컬 10 epoch, R540 평가 = 로컬 50 epoch(한 run으로 둘 다).
+- 상한 `npsa8_*fs_s{1,2}`, native head FedAPEN 분석 `an_{Cifar100_iid_fs,Cifar100_fs,Cifar100_iid}_s{1,2}` (seed 0은 완료).
+- 판정 기준은 seed 0과 같다(사전 등록 그대로). seed 3개 평균 ± 표준편차로 보고한다.
+- 라벨 이동 쪽 B·C도 seed 3개로(사용자 11-20): `an_{Cifar100,Cifar100_a0.3,Cifar100_a1}_s{1,2}`, feature shift 큐가 모두 뜬 뒤 시작.
+
+### 기기 실측 2차 (11-20 20시): Pi 5 벽 전력 + 로컬 단계 E = 50 반영
+- J7-C 인라인 USB 측정기(master, BLE)로 벽 전력을 기록하며 Pi 측정을 다시 했다(대기 약 5.0W, CPU 4코어 부하 8.4–8.8W로 측정기 대응 확인). 원자료 `docs/figs/data/device/wall_*.csv`, 측정기 로그 `wall_power.csv`(→ `wall_power_epoch.log`), 채움 `system/device_power_fill.py`. `device_compose.py`는 FedScout 로컬 단계를 50 epoch으로 계산(E_LOCAL).
+
+| 기기·데이터 | FedScout 2단계(490R + 50 로컬): 평균 시간 / 가장 느림 / 평균 에너지 | FedAPEN | 배수(시간·에너지) |
+|---|---|---|---|
+| Pi 5, CIFAR (벽 전력) | 3.6 h / 6.8 h / 80 kJ | 27.7 h / 91.3 h / 888 kJ | 7.8배 · 11배 |
+| Pi 5, Flowers (벽 전력) | 1.8 h / 2.5 h / 61 kJ | 6.0 h / 16.6 h / 200 kJ | 3.3배 · 3.3배 |
+| Orin Nano, CIFAR | 0.25 h / 0.42 h / 6.7 kJ | 0.98 h / 2.62 h / 32.4 kJ | 3.9배 · 4.8배 |
+| Orin Nano, Flowers | 0.05 h / 0.07 h / 1.8 kJ | 0.14 h / 0.38 h / 7.7 kJ | 3.0배 · 4.3배 |
+- 가장 느린 클라이언트의 FedScout 시간 대부분은 통신 없는 로컬 단계라 다른 기기를 기다리게 하지 않는다. 연합 단계 라운드 시간은 모든 기기가 같은 c8이라 모델 이질성과 무관.
+- 같은 run의 PMIC 값(Pi CIFAR): FedScout 45 kJ vs FedAPEN 624 kJ. 벽 전력이 대기 전력(약 5W)을 포함해 더 크다.
+
+
+## 9. 외부 리뷰(GPT, 11-20 밤) 대응 — 사용자: "지피티가 하란 거 다해"
+리뷰 판정: 지금 제출이면 Weak Reject, ICML 목표로 9주 더 쓸 만함. **12월 중순에 (a) 학습 중 지식 전달을 분리한 대조와 (b) 실제 도메인 결과를 보고 ICML 제출 여부를 판단**한다(리뷰 권고 그대로 채택).
+
+| # | 리뷰 지적 | 대응 | 상태 |
+|---|---|---|---|
+| 1 | FedAPEN 공유 모델은 학습 중 private의 KL·앙상블 손실로 도움을 받았다 → 공유 + 비율 비교는 추론 결합만 본다 | `--apen_shared_ce_only`(공유 모델은 CE만, 나머지 동일) 추가. `apence_{Cifar100,TinyImagenet}_s{0,1,2}`의 공유 + 비율을 기본 FedAPEN(61.15/48.33)과 비교 | 코드·smoke 완료, CIFAR 3개 큐 맨 앞, Tiny 3개는 최종 큐 끝 |
+| 2 | scout 단독을 본 표에 | `system/main_table.py` → `docs/figs/main_table.md`: scout 단독 / scout + 비율 / 결합 행, 마지막 평가 값, FedAPEN 대비 seed별 짝지은 차이 | 완료(CIFAR scout 단독 65.55, 결합 66.05) |
+| 3 | 정확도 차이를 2단계에 귀속하지 말 것, 기준선에도 같은 작은 탐색을 | 2단계는 "같은 정확도에서 연산 절감"으로만 주장. 탐색: FedAPEN 공유 lr ×{1,3} × head ×{1,8}(`--apen_shared_head_lr_scale` 추가), FedScout lr ×{1,3} × head ×{1,8}, CIFAR seed 0, validation(held-out)으로 선택 → 고른 설정만 seed 3개 | 큐 맨 앞 6개 |
+| 4 | test 곡선 최고값 대신 validation 선택 + 짝지은 차이 | 마지막 평가 값과 짝지은 차이를 표에 추가. FedAPEN에 held-out 정확도(`APENVal`) 기록 추가. FedScout은 held-out 결합 정확도(`held_counts`)로 선택 가능. 기준선(ariel)은 validation 기록이 없어 마지막 라운드 값으로 대체 | 부분 완료 |
+| 5 | C2가 가장 약함, τ = 1은 온도 의존, 기준 비율·평활화 명시 | `theory_label_shift.md`에 구현 세부 추가, NLL 기록(`APENNLL`, `nll_*`), 보정 사다리 진단(`scout_bias`: 학습된 클래스별 bias) 추가 | 완료(새 run부터 기록) |
+| 6 | 보정 사다리: prior → 클래스별 bias → 입력 의존 잔차, 로컬 표본 수·공유 모델 품질을 따로 바꾸며 정확도와 log loss | 공유 모델 품질 축은 궤적 그림(아래 7)으로. 로컬 표본 수 축은 `-fs`(few-shot, 클래스당 표본 수 제한) 또는 50/100명 분할로 → 실행 계획 필요 | 진단 코드 완료, 표본 수 축 실험 미착수 |
+| 7 | R330 → R500 역전을 공유 모델 품질 대비로 | `system/apen_trajectory.py` → `docs/figs/apen_trajectory_native.png`: 라벨 이동은 공유 모델이 좋아질수록 앙상블 이득이 0 아래로(Dir 0.1: 공유 약 18%에서 0), feature shift는 +3 유지 | 완료(native head, seed 0) |
+| 8 | D-대조 미달을 그대로, D-혼합은 "단독 최고 대비 +0.59" | 보고 방식 확정: D-대조 "사전 기준 미달(+1.23), 공유 단독 대비 +0.03", D-혼합 "공유 + 비율 대비 +8.88이지만 private 단독 대비 +0.59(공유 모델이 feature shift에서 11.6%로 무너짐)" | 문서 반영 |
+| 9 | FedScout에서 feature shift일 때 learner 이득이 일관되게 크다고 쓰지 말 것 | E = 50 seed 3개(`lafsa8L50_*fs`) 결과 뒤 판단 | 진행 중 |
+| 10 | 선행: Xu & Huang, FedRoD, PersFL, FedType + FedSCE(CVPR 2025), FedEMoE(ICML 2026) | `related_work.md`에 두 편 추가(존재 확인) | 완료 |
+| 11 | 두 번째 이중 모델(FML 등)에서도 분해 재현 | FML에 같은 진단(공유 + 비율, 클래스별 기록, NLL) 추가 후 CIFAR Dir 0.1 / feature shift | 다음 작업 |
+| 12 | 실제 도메인: DomainNet 공통 10클래스, 도메인 간 클래스 비율을 맞춘 조건 먼저, 모델 배정과 도메인 배정을 독립으로 | DomainNet 6도메인 다운로드 중(FedBN 10클래스만 추출) → 분할 생성기 작성 | 다운로드 진행 중 |
+| 13 | ICML 본문은 8쪽 | 일정 표 수정 | 완료 |
+| 14 | 실기기는 step 비용 × 횟수의 추정. 소규모 실제 연속 라운드(통신 포함)와 로컬 50 epoch을 재서 추정과 비교, 동기 라운드 지연·최고 메모리·cascade 정확도–지연 곡선 | Pi·Orin에서 짧은 실제 FL(통신 포함) 측정 스크립트 필요. cascade 곡선은 로그 + 기기 추론 지연으로 계산 가능 | 미착수(TMC 전 필수, ICML은 보조) |
+| 15 | 같은 scout에 learner를 붙이는 추가 비용과 그 대가 | 표로 정리(로컬 단계 연산 vs learner 기여) | 다음 작업 |

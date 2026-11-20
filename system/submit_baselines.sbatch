@@ -19,6 +19,7 @@ export PYTHONPATH=stylegan/stylegan-utils
 : "${METHOD:?METHOD 필요 (FedAPEN|FedAPEN_lr2|FedMRL|Local)}"
 : "${DATASET:?DATASET 필요 (Cifar100|Flowers102|TinyImagenet)}"
 : "${SEED:?SEED 필요}"
+GR_IN="${GR:-}"  # empty = not given (FedScout_sa then defaults to 540, see below)
 GR="${GR:-500}"
 EG="${EG:-10}"
 GARCH="${GARCH:-c20}"   # 공유 모델 구조. 본 표는 c8 (docs/experiment_plan.md 11-19)
@@ -45,8 +46,11 @@ case "${METHOD}" in
   # _sa = head averaged, personalized at R490; _ph = personal head. 100 clients need about 18 GB (fits a 24 GB 3090);
   # on a smaller GPU add --keep_client_models_on_gpu false (models parked in host memory between turns)
   # 11-20 evening, final: _sa adds head lr x8 and the 2-stage schedule (learner trains only after the R490 freeze)
+  # 11-20 night: final local stage = 50 learner-only epochs after the R490 freeze (no communication), so 540 rounds
+  # in total unless GR is given explicitly (smoke: GR=4 plus --scout_freeze_at 2 still works)
   FedScout_sa) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
-                            --scout_share all --scout_freeze_at 490 --scout_head_lr_scale 8 --scout_learner_after_freeze true) ;;
+                            --scout_share all --scout_freeze_at 490 --scout_head_lr_scale 8 --scout_learner_after_freeze true)
+               [[ -z "${GR_IN}" ]] && GR=540 ;;
   FedScout_ph) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
                             --scout_share backbone) ;;
   FedMRL)      METHOD_ARGS=(-algo FedMRL --global_arch "${GARCH}") ;;

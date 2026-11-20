@@ -6,12 +6,30 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from sklearn import metrics
 from sklearn.preprocessing import label_binarize
 
 from flcore.clients.clientscout import clientScout
 from flcore.servers.serverbase import Server
 from flcore.trainmodel.models import BaseHeadSplit
+
+
+def fit_class_bias(logits, y, num_classes):
+    """Class-wise constant logit correction b (num_classes numbers) minimizing CE(logits + b) on a client's training
+    split: the most a label-prior-only personalization can do on top of a fixed scout (absent classes go negative)."""
+    b = torch.zeros(num_classes, requires_grad=True)
+    opt = torch.optim.LBFGS([b], lr=1.0, max_iter=50, line_search_fn="strong_wolfe")
+
+    def closure():
+        opt.zero_grad()
+        loss = F.cross_entropy(logits + b, y)
+        loss.backward()
+        return loss
+
+    with torch.enable_grad():
+        opt.step(closure)
+    return b.detach()
 
 
 class FedScout(Server):
@@ -130,7 +148,9 @@ class FedScout(Server):
             held += [int(((lt + a * lp).argmax(1) == y).sum()) for a in self.alphas]
         a_star = self.alphas[int(np.argmax(held))]
         ids, nums, corrects, aucs = [], [], [], []
-        tot = {"scout": 0, "scout_prior": 0, "learner": 0, "logit_sum": 0, **{f"a{a:g}": 0 for a in self.alphas}}
+        tot = {"scout": 0, "scout_prior": 0, "scout_bias": 0, "learner": 0, "logit_sum": 0, **{f"a{a:g}": 0 for a in self.alphas}}
+        nll = {"scout": 0.0, "scout_prior": 0.0, "scout_bias": 0.0, "fused": 0.0}  # held-out log loss (sum)
+        n_held = 0
         cas = {t: [0, 0] for t in self.taus}  # correct, learner runs
         for cid, o in outs.items():
             lt, lp, y = o["test"]
@@ -142,6 +162,14 @@ class FedScout(Server):
             aucs.append(float(metrics.roc_auc_score(lb, z.numpy(), average="micro")) * len(y))
             tot["scout"] += int((lt.argmax(1) == y).sum())
             tot["scout_prior"] += int(((lt + o["log_prior"]).argmax(1) == y).sum())  # scout + log local class frequencies
+            # correction ladder (review 11-20): fixed log prior -> learned class-wise constant bias (C numbers fitted on my
+            # training logits) -> input-dependent learner residual (fused)
+            b = fit_class_bias(o["train"][0], o["train"][2], self.num_classes)
+            tot["scout_bias"] += int(((lt + b).argmax(1) == y).sum())
+            lh, ph, yh = o["held"]
+            n_held += len(yh)
+            for k, zz in (("scout", lh), ("scout_prior", lh + o["log_prior"]), ("scout_bias", lh + b), ("fused", lh + a_star * ph)):
+                nll[k] += float(F.cross_entropy(zz, yh, reduction="sum"))
             tot["learner"] += int((lp.argmax(1) == y).sum())
             tot["logit_sum"] += int(((lt + lp).argmax(1) == y).sum())
             for a in self.alphas:
@@ -155,5 +183,6 @@ class FedScout(Server):
         print(f"ScoutEval alpha={a_star:g} fused={sum(corrects) / n:.4f} "
               + " ".join(f"{k}={v / n:.4f}" for k, v in tot.items())
               + " " + " ".join(f"cascade{t:g}={c / n:.4f} run{t:g}={r / n:.4f}" for t, (c, r) in cas.items())
-              + f" held_counts={','.join(str(int(h)) for h in held)}")
+              + f" held_counts={','.join(str(int(h)) for h in held)}"
+              + " " + " ".join(f"nll_{k}={v / max(1, n_held):.4f}" for k, v in nll.items()))
         return ids, nums, corrects, aucs

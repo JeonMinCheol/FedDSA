@@ -293,3 +293,7 @@ a2019102224 계정 혼자 12개를 다 돌리면 GPU 1개로 차례대로 돌아
   - 조치: 496045~47 취소, `PACK_PAR=1`로 다시 제출: 496566 CIFAR, 496567 Flowers, 496568 Tiny. 취소하는 사이 클라이언트 수 잡 496019(nc50 jr0.5, `SERIAL`, mp4)가 먼저 GPU를 잡아 ariel-v2에서 시작했다. 이 잡이 끝나면 묶음이 이어진다.
 - 11-20 n1mb0606 FedScout 클라이언트 수 제출 (사용자 지시, 큐 맨 뒤 nice 800, `da085ee` 이후 코드): 496621 nc100 jr0.3, 496622 nc50 jr0.5. `METHOD=FedScout_sa GARCH=c8 SERIAL=1`(seed 0→1→2, `max_parallel_clients 4`). run 이름 `fsjr03_FedScout_sa_Cifar100_100_s<seed>`, `fsjr05_FedScout_sa_Cifar100_50_s<seed>` → TSV `fedscout_nc100jr0.3_s<seed>.tsv`, `fedscout_nc50jr0.5_s<seed>.tsv`.
 - 11-20 위 FedScout 2개(496621, 496622)는 사용자 지시로 취소했다. FedScout 클라이언트 수 실험은 전부 a2019102224에서 돌린다. n1mb0606은 기준선만.
+
+### 11-20 밤 (63): FedScout_sa 정의 변경 — 로컬 단계 50 epoch
+- 최종 구성의 로컬 단계를 E = 50 epoch으로 확정했다(Flowers 10/50/100 → 69.32/69.62/69.52). `submit_baselines.sbatch`의 `METHOD=FedScout_sa`는 이제 **GR을 따로 주지 않으면 540 라운드**(R490 동결 뒤 50 라운드는 learner만 로컬 학습, 통신 없음)로 돈다. smoke처럼 GR을 직접 주면 그 값을 쓴다.
+- a2019102224: 이 커밋 이전 정의(500 라운드)로 이미 낸 FedScout_sa 클라이언트 수 run은 R500 평가가 "로컬 10 epoch" 지점이라 그대로 비교에 쓸 수 있지만, 최종 표는 540 라운드 값이 필요하다. 아직 안 낸 run은 이 커밋 이후로 낸다.

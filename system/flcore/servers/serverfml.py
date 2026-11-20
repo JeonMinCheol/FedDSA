@@ -73,3 +73,12 @@ class FML(Server):
                                       for k, v in global_model.state_dict().items()})
 
         save_item(global_model, self.role, 'global_model', self.save_folder_name)
+
+    def evaluate(self, *args, **kwargs):
+        out = super().evaluate(*args, **kwargs)
+        d = [c.diag_fml for c in self.clients if getattr(c, "diag_fml", None)]
+        if d:
+            n = sum(x[2] for x in d)
+            print("FMLDiag " + " ".join(f"{k}={sum(x[0][k] for x in d) / n:.4f}" for k in d[0][0])
+                  + " | NLL " + " ".join(f"{k}={sum(x[1][k] for x in d) / n:.4f}" for k in d[0][1]))
+        return out
