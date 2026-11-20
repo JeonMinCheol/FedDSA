@@ -230,6 +230,12 @@
 - 지금 대기열(c8 기준선: FedMRL Tiny 등, FedAPEN·FedMRL 클라이언트 수 실험)을 그대로 진행한다.
 - 위 "11-20 요청"의 FedAPEN 원래 차원 head 재측정(`METHOD=FedAPEN_nh`, c8, 3 데이터셋 × seed 0~2)도 기준선 일이므로 이 계정이 맡는다. 순서는 지금 대기열 다음.
 
+- **추가 요청 (11-20, 부록): FedAPEN c8을 1000R까지 (seed 0, 3 데이터셋).**
+  - 이유: 본 표 FedAPEN c8은 세 데이터셋 모두 R500이 최고이고 마지막 100라운드에도 +1.8~2.4씩 오르고 있다(CIFAR 52.4→54.8, Flowers 57.9→59.7, Tiny 39.4→41.8). 리뷰어의 "더 돌리면 따라잡는다"에 답하려고, 어디서 평평해지는지 본다. lr 등 나머지는 본 표와 같다(원 논문 설정 유지).
+  - 실행: `METHOD=FedAPEN GARCH=c8 GR=1000 SEED=0 PREFIX=long` × `DATASET=Cifar100 / Flowers102 / TinyImagenet` (run 이름 `long_FedAPEN_<데이터셋>_s0`). 진단 줄(`APENDiag`, shared+prior)도 그대로 기록된다.
+  - 곡선: `python comm_vs_acc.py --export <로그> ../docs/figs/data/fedapen_c8_1000R_<데이터셋>_s0.tsv` 후 push.
+  - 순서: FedAPEN_nh 다음. Tiny는 500R에 약 10시간 걸렸으니 1000R은 약 20시간.
+
 ### a2019102224: pFedMoE + FedScout 클라이언트 수·참여율 실험 (새로 할당)
 - 하던 pFedMoE c8(본 표, 클라이언트 수 실험)은 그대로 마무리한다.
 - **새 일: FedScout 클라이언트 수·참여율 실험 12개.** 63 노드(2080 Ti 11GB)에서는 100명 run이 메모리 부족으로 죽어서 ariel로 옮긴다.

@@ -34,6 +34,9 @@ class clientScout(Client):
         self.model = load_item(self.role, "model", self.save_folder_name).to("cpu" if self.offload else self.device)
         self.scout = None  # set by the server (same initial weights everywhere)
         self.lr_scale = float(args.scout_lr_scale)
+        # scout projector/head lr = scout lr x this (8 matches the pool projector: 64 features repeated 8 times into a
+        # 512 x C head act like one 64 x C head trained with an 8x larger step)
+        self.head_lr_scale = float(args.scout_head_lr_scale)
         self.wd = float(args.scout_wd)
         self.val = float(args.scout_val)
         self.residual = args.scout_residual  # p2: learner only through the sum; i1: + standalone CE + KL to the scout
@@ -83,8 +86,12 @@ class clientScout(Client):
         sc.train()
         if self.frozen:
             sc.base[0].eval()  # frozen backbone keeps its BN statistics
-        params_s = [p for p in sc.parameters() if p.requires_grad]
-        opt_s = torch.optim.SGD(params_s, lr=self.learning_rate * self.lr_scale, weight_decay=self.wd) if params_s else None
+        lr_s = self.learning_rate * self.lr_scale
+        groups = [{"params": [p for n, p in sc.named_parameters() if p.requires_grad and n.startswith("base.0.")], "lr": lr_s},
+                  {"params": [p for n, p in sc.named_parameters() if p.requires_grad and not n.startswith("base.0.")],
+                   "lr": lr_s * self.head_lr_scale}]
+        groups = [g for g in groups if g["params"]]
+        opt_s = torch.optim.SGD(groups, lr=lr_s, weight_decay=self.wd) if groups else None
         opt = torch.optim.SGD(model.parameters(), lr=self.learning_rate)
         teacher = copy.deepcopy(sc).eval().requires_grad_(False)  # the received scout, before it fits my data
         if self.cache and self.frozen and not self.augment:  # cached features are only valid for unaugmented inputs
@@ -176,7 +183,7 @@ class clientScout(Client):
         params = [p for n, p in sc.named_parameters() if not n.startswith("base.0.")]
         for p in params:
             p.requires_grad_(True)
-        opt = torch.optim.SGD(params, lr=self.learning_rate * self.lr_scale, weight_decay=self.wd)
+        opt = torch.optim.SGD(params, lr=self.learning_rate * self.lr_scale * self.head_lr_scale, weight_decay=self.wd)
         for _ in range(epochs):
             for x, y in self.load_train_data():
                 x, y = self._to(x, y)

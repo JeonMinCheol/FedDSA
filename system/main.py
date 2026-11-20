@@ -823,6 +823,9 @@ if __name__ == "__main__":
                         help="FedScout: projector of the scout and the learner to -fd (pool = HtFLlib's AdaptiveAvgPool1d; none = "
                              "no projector, each model keeps its own classifier shape, e.g. 64 x C for the c8 scout: lighter to "
                              "share; nothing of the learner is shared, so it needs no common feature size either)")
+    parser.add_argument('--scout_head_lr_scale', type=float, default=1.0,
+                        help="FedScout: scout projector/head lr = scout lr x this (8 ~ the pool projector's effective head step "
+                             "for a 64-d c8 head under -fd 512)")
     parser.add_argument('--scout_width', type=float, default=1.0, help="FedScout: channel multiplier of the scout")
     parser.add_argument('--scout_lr_scale', type=float, default=3.0, help="FedScout: scout lr = local lr x this")
     parser.add_argument('--scout_wd', type=float, default=0.0, help="FedScout: scout weight decay")
