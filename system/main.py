@@ -481,7 +481,8 @@ if __name__ == "__main__":
     parser.add_argument('--random_seed', type=int, default=0)
     parser.add_argument('--max_parallel_clients', type=int, default=1)
     parser.add_argument('--keep_client_models_on_gpu', type=str2bool, nargs='?', const=True, default=True,
-                        help="FedDSA/FedSA: retain client models in VRAM between phases; false enables CPU offloading")
+                        help="FedDSA/FedSA/FedScout: retain client models in VRAM between phases; false enables CPU offloading "
+                             "(needed for FedScout with 100 HtFE-8 clients)")
     parser.add_argument('--pin_memory', type=str2bool, nargs='?', const=True, default=True)
     # practical
     parser.add_argument('-cdr', "--client_drop_rate", type=float, default=0.0,

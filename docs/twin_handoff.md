@@ -4,7 +4,7 @@
 논문 실험 계획(본 표, 기준선, ablation, 일반화, 효율)은 `docs/experiment_plan.md`.
 답변은 한국어로, 연구 동료처럼(아이디어의 약점과 반례를 먼저) 한다.
 
-**노드 역할 (2026-11-19):** **ariel.khu.ac.kr**(Slurm)은 기준선 측정(`docs/baselines_progress.md`), **163.180.117.63**은 FedScout 관련 실험. 다른 노드의 일은 돌리지 않고, 상태는 문서에 적어 push해서 공유한다.
+**노드 역할 (2026-11-20 갱신):** ariel.khu.ac.kr(Slurm)은 계정 두 개로 나눠 일한다. **n1mb0606**은 기준선 측정, **a2019102224**는 pFedMoE 기준선과 FedScout 클라이언트 수·참여율 실험(100명은 63에 메모리가 부족). **163.180.117.63**은 나머지 FedScout 실험과 해석. 다른 노드·계정의 일은 돌리지 않고, 상태는 `docs/baselines_progress.md`에 적어 push해서 공유한다.
 
 ## 1. 연구 한 줄 요약
 

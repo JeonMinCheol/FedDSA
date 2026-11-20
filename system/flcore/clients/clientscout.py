@@ -28,7 +28,10 @@ class clientScout(Client):
         super().__init__(args, id, train_samples, test_samples, **kwargs)
         torch.manual_seed(self.random_seed)
         self.device = torch.device(args.device)
-        self.model = load_item(self.role, "model", self.save_folder_name).to(self.device)  # residual learner
+        # --keep_client_models_on_gpu false: park my learner and scout in host memory between my turns (100 clients'
+        # HtFE-8 learners do not fit in one GPU); they move to the GPU only while I train or am evaluated
+        self.offload = not bool(getattr(args, "keep_client_models_on_gpu", True))
+        self.model = load_item(self.role, "model", self.save_folder_name).to("cpu" if self.offload else self.device)
         self.scout = None  # set by the server (same initial weights everywhere)
         self.lr_scale = float(args.scout_lr_scale)
         self.wd = float(args.scout_wd)
@@ -61,13 +64,18 @@ class clientScout(Client):
         return DataLoader(self.split()[0], batch_size or self.batch_size, drop_last=drop_last, shuffle=True,
                           pin_memory=str(self.device).startswith("cuda"))
 
+    def _park(self):
+        if self.offload:
+            self.scout.to("cpu")
+            self.model.to("cpu")
+
     def _to(self, x, y):
         return x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True).long().view(-1)
 
     # ---- training ---------------------------------------------------------------------------------------------------
     def train(self):
         start = time.time()
-        sc, model = self.scout.to(self.device), self.model
+        sc, model = self.scout.to(self.device), self.model.to(self.device)
         trainloader = self.load_train_data()
         fixed = self.frozen and self.head_frozen  # the scout does not change any more
         for n, p in sc.named_parameters():
@@ -133,6 +141,7 @@ class clientScout(Client):
                 nb += 1
         self.latest_train_metrics = {k: v / max(nb, 1) for k, v in sums.items()}
         save_item(model, self.role, "model", self.save_folder_name)
+        self._park()
         self.train_time_cost["num_rounds"] += 1
         self.train_time_cost["total_cost"] += time.time() - start
 
@@ -160,7 +169,8 @@ class clientScout(Client):
         """After the averaged backbone arrives (or is restored), fit my personal projector/head to it with the backbone
         and its BN fixed; otherwise the scout I evaluate and learn from is a new backbone under last round's head.
         sc: a copy to fit instead of my scout (evaluation-time personalization, --scout_eval_ft)."""
-        sc = (self.scout if sc is None else sc).to(self.device)
+        own = sc is None
+        sc = (self.scout if own else sc).to(self.device)
         sc.train()
         sc.base[0].eval()
         params = [p for n, p in sc.named_parameters() if not n.startswith("base.0.")]
@@ -176,6 +186,8 @@ class clientScout(Client):
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
+        if own:
+            self._park()
 
     # ---- evaluation -------------------------------------------------------------------------------------------------
     @torch.no_grad()
@@ -195,6 +207,7 @@ class clientScout(Client):
         n = len(val)
         out = correct(val), correct(Subset(train, list(range(min(n, len(train)))))), n
         sc.train()
+        self._park()
         return out
 
     @torch.no_grad()
@@ -207,7 +220,7 @@ class clientScout(Client):
             sc = copy.deepcopy(self.scout)
             with torch.enable_grad():
                 self.realign(1, sc)
-        sc, model = sc.to(self.device).eval(), self.model.eval()
+        sc, model = sc.to(self.device).eval(), self.model.to(self.device).eval()
         out = {}
         for tag, loader in (("test", self.load_test_data()), ("held", DataLoader(self.split()[1], 256))):
             lt, lp, ys = [], [], []
@@ -220,6 +233,7 @@ class clientScout(Client):
         out["log_prior"] = self.log_prior().cpu()  # diagnostic: is the learner just a local class-prior fix?
         sc.train()
         model.train()
+        self._park()
         return out
 
     def test_metrics(self):  # the server scores the fused prediction (see FedScout.test_metrics)

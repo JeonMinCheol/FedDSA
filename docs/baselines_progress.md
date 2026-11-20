@@ -222,3 +222,21 @@
 - 실행: `submit_baselines.sbatch`에 `METHOD=FedAPEN_nh` 추가. `GARCH=c8`, 3 데이터셋 × seed 0~2, 나머지 지시서 그대로(원 논문 lr 0.01, 개인 head 없음).
 - 곡선 내보내기: `python comm_vs_acc.py --export <run 로그> ../docs/figs/data/fedapen_nh_c8_<dataset>_s<seed>.tsv` 후 push. 그림 스크립트는 이 이름을 이미 읽는다.
 - 우선순위: 지금 대기 중인 c8 기준선(FedAPEN CIFAR, FedMRL, pFedMoE 나머지) 다음.
+
+## 11-20 ariel 계정별 역할 분리 (사용자 지시, 63 노드가 적음)
+앞으로 ariel의 두 계정은 일을 나눠 받는다. 아래 할당만 하고, 다른 계정의 일은 돌리지 않는다.
+
+### n1mb0606: 하던 기준선 측정 계속
+- 지금 대기열(c8 기준선: FedMRL Tiny 등, FedAPEN·FedMRL 클라이언트 수 실험)을 그대로 진행한다.
+- 위 "11-20 요청"의 FedAPEN 원래 차원 head 재측정(`METHOD=FedAPEN_nh`, c8, 3 데이터셋 × seed 0~2)도 기준선 일이므로 이 계정이 맡는다. 순서는 지금 대기열 다음.
+
+### a2019102224: pFedMoE + FedScout 클라이언트 수·참여율 실험 (새로 할당)
+- 하던 pFedMoE c8(본 표, 클라이언트 수 실험)은 그대로 마무리한다.
+- **새 일: FedScout 클라이언트 수·참여율 실험 12개.** 63 노드(2080 Ti 11GB)에서는 100명 run이 메모리 부족으로 죽어서 ariel로 옮긴다.
+  - 설정(기준선과 같음): CIFAR-100, `-lbs 32`, 500R, `-eg 10`, seed 0~2, HtFE-img-8. (50명, join 0.5) `DATASET=Cifar100_50 NC=50 JR=0.5`, (100명, join 0.5/0.3/0.1) `DATASET=Cifar100_100 NC=100 JR=…`.
+  - 코드: 이 문서와 같은 커밋 이후의 main. FedScout 클라이언트가 자기 차례에만 모델을 GPU에 올리는 수정(`--keep_client_models_on_gpu false`)이 들어 있다. 63에서 100명·join 0.1·0.5 smoke 통과.
+  - 실행: `submit_baselines.sbatch`의 `METHOD=FedScout_sa` 또는 `METHOD=FedScout_ph` (스크립트에 오프로딩·`--max_parallel_clients 1`이 들어 있다). 이 계정 python은 `PYTHON_BIN=/nas2/data/a2019102224/miniconda3/envs/htfllib/bin/python`으로 넘긴다(`LD_LIBRARY_PATH` 필요, pFedMoE 때와 같음).
+  - 예: `sbatch -J fs_nc100jr0.1_s0 --export=ALL,METHOD=FedScout_sa,DATASET=Cifar100_100,NC=100,JR=0.1,SEED=0,GARCH=c8,PREFIX=fs,PYTHON_BIN=... submit_baselines.sbatch`
+  - **어느 METHOD를 돌릴지는 63의 판정 뒤 확정한다(11-20 17시 무렵, 이 절에 "확정"으로 적는다).** 그 전에는 `GR=3 RUN=smoke_fs_nc100` smoke만 돌려 오류와 메모리를 확인한다.
+  - 걸리는 시간(63 2080 Ti 기준, ariel GPU는 더 빠를 것): 100명 join 0.5 라운드당 약 2~3분(500R 약 19시간), join 0.3 약 12시간, join 0.1 약 5시간, 50명 약 9시간.
+  - 결과: run 로그에서 `python comm_vs_acc.py --export <로그> ../docs/figs/data/fedscout_nc<명>jr<참여율>_s<seed>.tsv`로 곡선을 내보내 push. 표에는 seed 평균 곡선 최고값 ± 표준편차.

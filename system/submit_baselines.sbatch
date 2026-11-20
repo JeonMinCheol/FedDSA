@@ -13,7 +13,7 @@
 set -euo pipefail
 
 cd /nas2/data/n1mb0606/FedDSA/system
-PYTHON_BIN=/nas2/data/n1mb0606/anaconda3/envs/htfllib/bin/python
+PYTHON_BIN="${PYTHON_BIN:-/nas2/data/n1mb0606/anaconda3/envs/htfllib/bin/python}"  # a2019102224: PYTHON_BIN=... 로 덮어씀
 export PYTHONPATH=stylegan/stylegan-utils
 
 : "${METHOD:?METHOD 필요 (FedAPEN|FedAPEN_lr2|FedMRL|Local)}"
@@ -41,6 +41,12 @@ case "${METHOD}" in
   FedAPEN_lr2) METHOD_ARGS=(-algo FedAPEN --global_arch "${GARCH}" --apen_shared_lr_scale 2) ;;
   # FedAPEN with the shared model's own classifier (64 x C for c8, no pool to -fd): FedAPEN mixes only logits (11-20)
   FedAPEN_nh)  METHOD_ARGS=(-algo FedAPEN --global_arch "${GARCH}" --apen_native_head true) ;;
+  # FedScout final config (11-20): c8 scout without projector, realign off, no gate freeze; client models parked in host
+  # memory between turns (100 clients do not fit otherwise). _sa = head averaged, personalized at R490; _ph = personal head
+  FedScout_sa) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
+                            --scout_share all --scout_freeze_at 490 --keep_client_models_on_gpu false) ;;
+  FedScout_ph) METHOD_ARGS=(-algo FedScout --scout_arch c8 --scout_gate 1000 --scout_realign 0 --scout_projector none
+                            --scout_share backbone --keep_client_models_on_gpu false) ;;
   FedMRL)      METHOD_ARGS=(-algo FedMRL --global_arch "${GARCH}") ;;
   Local)       METHOD_ARGS=(-algo FedSA --fedsa_anchor_momentum 1.0 --fedsa_eval head --projector linear
                             --fedsa_anchor_codebook simplex --fedsa_gap_mode min -lam 0 -mcl 0 -cc 0) ;;
@@ -54,7 +60,7 @@ CMD=("${PYTHON_BIN}" -u main.py
   "${DATA_ARGS[@]}" "${METHOD_ARGS[@]}")
 # GPU 하나에 run 3개를 같이 올릴 때만 MAX_PAR=2 (사용자 지시)
 # 클라이언트 수 실험(SERIAL, GPU에 run 하나)만 4 (사용자 지시 11-19). 묶음은 cuDNN 오류 이력 때문에 1 유지
-[[ -n "${SERIAL:-}" ]] && MAX_PAR=4
+[[ -n "${SERIAL:-}" && "${METHOD}" != FedScout* ]] && MAX_PAR=4  # FedScout: 1 (never tested with client threads)
 [[ -n "${MAX_PAR:-}" ]] && CMD+=(--max_parallel_clients "${MAX_PAR}")
 
 mkdir -p logs
